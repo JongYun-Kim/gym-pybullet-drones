@@ -215,7 +215,7 @@ class BaseAviary(gym.Env):
                                                                     upAxisIndex=2,
                                                                     physicsClientId=self.CLIENT
                                                                     )
-                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=60.0,
+                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=30.0,
                                                             aspect=self.VID_WIDTH/self.VID_HEIGHT,
                                                             nearVal=0.1,
                                                             farVal=1000.0
