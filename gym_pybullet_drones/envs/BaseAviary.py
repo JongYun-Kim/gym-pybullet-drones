@@ -1,7 +1,7 @@
 import os
 from sys import platform
 import time
-import collections
+import collections.abc as collections
 from datetime import datetime
 from enum import Enum
 import xml.etree.ElementTree as etxml
