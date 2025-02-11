@@ -38,9 +38,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
                  stack_size: int = 4             # 이미지 프레임 stack 개수
                  ):
-        # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
         self.stack_size = stack_size
         self.EPISODE_LEN_SEC = episode_len_sec
+
+        # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
         self._resetLandingPad()
 
         # 상위 클래스 초기화: 이 호출 이후에 self.IMG_RES 등 필요한 속성이 생성됨
@@ -60,6 +61,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # 이제 IMG_RES가 정의되었으므로 dummy_frame을 생성하고 frame_buffer 초기화
         dummy_frame = np.zeros((int(self.IMG_RES[1]), int(self.IMG_RES[0]), 3), dtype=np.uint8)
         self.frame_buffer = [dummy_frame for _ in range(self.stack_size)]
+
+        self.asset_path = "../../asset"
+        self.urdf_counter = 0
 
     def _resetLandingPad(self):
         """
@@ -223,6 +227,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 착륙 성공 (수평거리 < 0.2m, 고도 차 < 0.2m, 수평 속도 < 0.1m/s) 시 큰 보너스 지급
           - 드론이 너무 낮은 상태에서 패드와 멀어졌다면(크래시) 추가 패널티
         """
+        # TODO: modularize this reward function
+        #       and allow to have custom combinations via config(dict) for curriculum learning
         drone_pos = np.array(self.pos[0])
         pad_pos = np.array(self.landing_pad_pos)
         horizontal_distance = np.linalg.norm(drone_pos[:2] - pad_pos[:2])
@@ -282,6 +288,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         onboard 이미지가 저장된 폴더(self.ONBOARD_IMG_PATH) 내의 PNG 파일들을 ffmpeg를 이용하여 동영상으로 변환하는 예시 메서드.
         PNG 파일은 "frame_<번호>.png" 형식으로 저장되어 있다고 가정함.
         """
+        # TODO: still in alpha
         # ffmpeg 명령어 예시:
         # ffmpeg -y -framerate 24 -i frame_%d.png -c:v libx264 -pix_fmt yuv420p onboard_video.mp4
         cmd = [
@@ -303,6 +310,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         해당 폴더의 PNG 파일들을 ffmpeg로 동영상으로 변환하는 예시 메서드.
         (BaseAviary의 record 옵션에서 DIRECT 모드로 동작 시 사용됨)
         """
+        # TODO: still in alpha
         cmd = [
             "ffmpeg",
             "-y",
