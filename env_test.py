@@ -26,16 +26,16 @@ while not done:
     env.render()
     # observation은 stacked 이미지: (H, W, 3*stack_size)
     # 최근 프레임만 확인하려면 마지막 3채널을 분리
-    current_frame = obs[..., -3:]
+    # current_frame = obs[..., -3:]
     # cv2.imshow("Drone Camera", current_frame)
     # if cv2.waitKey(1) & 0xFF == ord('q'):
     #     break
+    #
+    # plt.imshow(current_frame)
+    # plt.axis("off")
+    # plt.show()
 
-    plt.imshow(current_frame)
-    plt.axis("off")
-    plt.show()
-
-cv2.destroyAllWindows()
+# cv2.destroyAllWindows()
 env.close()
 
 print("Done")
