@@ -6,7 +6,7 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경을 구현한 예�
 
 주요 특징:
     - 드론 모델: CF2X (craziflie 2.0, x configuration)
-    - 헬리패드: 움직이는 착륙 패드 (간단한 URDF cube를 이용하여 구현)
+    - 헬리패드: 움직이는 착륙 패드 (simple car + helipad texture from parsed_pad.urdf in assets dir)
     - Observation: 드론 카메라에서 촬영한 RGB 이미지(알파 채널 제외)를 4 프레임 stack
     - Action: 드론의 RPM (ActionType.RPM 예시)
     - Reward: 드론과 착륙 패드 간의 상대 위치, 속도 등으로 산출 (착륙 성공 시 큰 보너스)
@@ -38,8 +38,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
                  stack_size: int = 4             # 이미지 프레임 stack 개수
                  ):
-        self.stack_size = stack_size
-        self.EPISODE_LEN_SEC = episode_len_sec
+        self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
         self.assets_path = "./gym_pybullet_drones/assets"
 
         # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
@@ -55,7 +54,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                          gui=gui,
                          record=record,
                          obs=obs,
-                         act=act)
+                         act=act,
+                         episode_len_sec=episode_len_sec)
         # onboard 이미지 저장 경로 생성 (이미 BaseAviary에서 설정됨)
         # 예: self.ONBOARD_IMG_PATH = ...  (이미 BaseAviary.__init__() 내에서 할당)
 
@@ -252,6 +252,68 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             reward -= 100
 
         return reward
+
+    def _computeReward_thanks_to_Pawel(self):
+        lambda_error = 1/3
+        desired_z_velocity = -0.5
+        #eventually it will become speed of ground vehicle
+        desired_xy_velocity = 0.0
+        alpha = 30
+        UGV_pos = np.array(self._get_vehicle_position()[0])
+        UGV_vel = self._get_vehicle_velocity()
+        drone_state = self._getDroneStateVector(0)
+        drone_position = drone_state[0:3]
+        drone_velocity = drone_state[10:13]
+        velocity_error = np.linalg.norm(drone_velocity)
+        #velocity_reward = velocity_error
+        #distance_xy = np.linalg.norm(drone_position[0:2]-UGV_pos[0:2])
+        #distance_z = np.linalg.norm(drone_position[2]-UGV_pos[2])
+        #distance_reward = (alpha*distance_xy+beta*distance_z)/10
+        #combined_reward = -(gamma*distance_reward**2+zeta*velocity_error**2)
+        position_errors = np.abs(drone_position - UGV_pos)
+        distance_xy = np.linalg.norm(drone_position[0:2]-UGV_pos[0:2])
+        distance_z = np.linalg.norm(drone_position[2:3]-UGV_pos[2:3])
+        velocity_z_flag = (0 > drone_velocity[2]) * (drone_velocity[2] > desired_z_velocity)
+        reward_z_velocity = (alpha**(drone_velocity[2]/desired_z_velocity) -1)/(alpha -1)
+        angle = np.rad2deg(np.arctan2(distance_xy,distance_z))
+        #punishment for excessive z velocity
+        if velocity_z_flag == False:
+            if drone_velocity[2] < desired_z_velocity:
+                reward_z_velocity = -0.01#-abs(drone_velocity[2]/self.SPEED_LIMIT[2])**2
+            else:
+                reward_z_velocity = -0.1#- 10*drone_velocity[2]
+            if abs(drone_velocity[2])/self.SPEED_LIMIT[2] > 1.1:
+                reward_z_velocity = 0#reward_z_velocity -5
+        #reward_xy_velocity = np.sum(-np.abs(drone_velocity[0:2]- desired_xy_velocity))
+        if distance_xy < 10:
+            normalized_distance_xy = 0.1*(10 - distance_xy)
+            reward_xy = (30**normalized_distance_xy -1)/(30 -1)
+        else:
+            reward_xy = 0 #-distance_xy
+        if distance_z < 10:
+            normalized_distance_z = 0.1*(10-distance_z)
+            reward_z = (30**normalized_distance_z -1)/(30 -1)
+        else:
+            reward_z = 0
+        combined_reward = 0.6*reward_xy + 1.0*reward_z_velocity#+ 0.2*reward_z + reward_z_velocity #np.tanh(reward_z_velocity) #+ reward_xy_velocity
+        #print(distance_xy)
+        #combined_reward = np.sum(combined_reward)
+        #if combined_reward < 0:
+        #    print(drone_velocity)
+        #    exit()
+        if drone_position[2] >= 0.275 and p.getContactPoints(bodyA=1, physicsClientId=self.CLIENT) != ():
+            print('landed!')
+            combined_reward =  140 + combined_reward
+        elif drone_position[2]  < 0.275 and p.getContactPoints(bodyA=1, physicsClientId=self.CLIENT) != ():
+            print('crashed!')
+            combined_reward = -1 #normalized_distance_xy * 10 #0#5*distance_xy + combined_reward
+        else:
+            combined_reward =  combined_reward
+        distance_x = np.abs(drone_position[0]-UGV_pos[0])
+        distance_y = np.abs(drone_position[1]-UGV_pos[1])
+        if np.abs(angle) > 30 and (distance_y > 0.8 and distance_x > 0.8):
+            combined_reward = -0.01
+        return combined_reward
 
     def _computeDone(self):
         """

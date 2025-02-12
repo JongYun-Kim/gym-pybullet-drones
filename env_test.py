@@ -14,7 +14,7 @@ env = VisionLandingAviary(
     act=ActionType.RPM,
     episode_len_sec=10,
     stack_size=4,
-    record=True         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
+    record=False         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
 )
 
 obs = env.reset()
