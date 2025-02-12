@@ -40,6 +40,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  ):
         self.stack_size = stack_size
         self.EPISODE_LEN_SEC = episode_len_sec
+        self.assets_path = "./gym_pybullet_drones/assets"
 
         # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
         self._resetLandingPad()
@@ -62,16 +63,13 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         dummy_frame = np.zeros((int(self.IMG_RES[1]), int(self.IMG_RES[0]), 3), dtype=np.uint8)
         self.frame_buffer = [dummy_frame for _ in range(self.stack_size)]
 
-        self.asset_path = "../../asset"
-        self.urdf_counter = 0
-
     def _resetLandingPad(self):
         """
         착륙 패드 관련 파라미터 초기화:
             - 초기 위치: [0, 0, 0.05] (높이는 약간 올려서 충돌 판정을 피함)
             - 이동 반경 및 속도: 원형 궤적으로 움직이도록 설정
         """
-        self.landing_pad_start_pos = np.array([0.0, 0.0, 0.05])
+        self.landing_pad_start_pos = np.array([-0.7, 0.0, 0.05])
         self.landing_pad_amplitude = 1.0   # 원의 반지름 (미터)
         self.landing_pad_omega = 0.2       # 각속도 (rad/s)
         self.landing_pad_pos = self.landing_pad_start_pos.tolist()
@@ -81,13 +79,20 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         BaseAviary의 _addObstacles()를 오버라이드하여,
         움직이는 착륙 패드만 환경에 추가한다.
         여기서는 pybullet_data 내의 cube.urdf를 사용하며, globalScaling을 조절하여 착륙 패드 크기를 설정함.
+        여기서는 착륙 패드를 'parsed_pad.urdf' 파일을 가져옴.
+        내부에는 base1.obj를 참고하고
+        그 내부에는 base1.mtl을 참고하며
+        그 내부에는 입힐 texture를 image 파일을 지정함. 모두 self.assets_path 내에 있어야 함. 복작복작복잡하네.
         """
-        pad_urdf = os.path.join(pybullet_data.getDataPath(), "cube.urdf")
-        pad_start_orientation = p.getQuaternionFromEuler([0, 0, 0])
-        self.landing_pad_id = p.loadURDF(pad_urdf,
-                                         self.landing_pad_pos,
-                                         pad_start_orientation,
-                                         globalScaling=0.5,
+        pad_urdf = self.assets_path + "/parsed_pad.urdf"
+        yaw = np.random.uniform(-np.pi/12.0, np.pi/12.0)
+        pad_start_orientation_euler = [0,0, yaw]
+        pad_start_orientation_quaternion = p.getQuaternionFromEuler(pad_start_orientation_euler)
+
+        print("PyBullet is searching in:", os.getcwd())  # Check current directory
+        self.landing_pad_id = p.loadURDF(fileName=pad_urdf,
+                                         basePosition=self.landing_pad_pos,
+                                         baseOrientation=pad_start_orientation_quaternion,
                                          physicsClientId=self.CLIENT)
 
     def _updateLandingPad(self):
