@@ -69,10 +69,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             - 초기 위치: [0, 0, 0.05] (높이는 약간 올려서 충돌 판정을 피함)
             - 이동 반경 및 속도: 원형 궤적으로 움직이도록 설정
         """
-        self.landing_pad_start_pos = np.array([-0.7, 0.0, 0.05])
+        self.landing_pad_base_start_pos = np.array([-0.7, 0.0, 0.05])
         self.landing_pad_amplitude = 1.0   # 원의 반지름 (미터)
         self.landing_pad_omega = 0.2       # 각속도 (rad/s)
-        self.landing_pad_pos = self.landing_pad_start_pos.tolist()
+        self.landing_pad_base_pos = self.landing_pad_base_start_pos.tolist()
 
     def _addObstacles(self):
         """
@@ -91,7 +91,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         print("PyBullet is searching in:", os.getcwd())  # Check current directory
         self.landing_pad_id = p.loadURDF(fileName=pad_urdf,
-                                         basePosition=self.landing_pad_pos,
+                                         basePosition=self.landing_pad_base_pos,
                                          baseOrientation=pad_start_orientation_quaternion,
                                          physicsClientId=self.CLIENT)
 
@@ -102,12 +102,12 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         그리고 p.resetBasePositionAndOrientation()를 통해 패드의 위치를 갱신함.
         """
         t = self.step_counter * self.TIMESTEP
-        x = self.landing_pad_start_pos[0] + self.landing_pad_amplitude * np.cos(self.landing_pad_omega * t)
-        y = self.landing_pad_start_pos[1] + self.landing_pad_amplitude * np.sin(self.landing_pad_omega * t)
-        z = self.landing_pad_start_pos[2]
-        self.landing_pad_pos = [x, y, z]
+        x = self.landing_pad_base_start_pos[0] + self.landing_pad_amplitude * np.cos(self.landing_pad_omega * t)
+        y = self.landing_pad_base_start_pos[1] + self.landing_pad_amplitude * np.sin(self.landing_pad_omega * t)
+        z = self.landing_pad_base_start_pos[2]
+        self.landing_pad_base_pos = [x, y, z]
         p.resetBasePositionAndOrientation(self.landing_pad_id,
-                                          self.landing_pad_pos,
+                                          self.landing_pad_base_pos,
                                           p.getQuaternionFromEuler([0, 0, 0]),
                                           physicsClientId=self.CLIENT)
 
@@ -235,7 +235,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # TODO: modularize this reward function
         #       and allow to have custom combinations via config(dict) for curriculum learning
         drone_pos = np.array(self.pos[0])
-        pad_pos = np.array(self.landing_pad_pos)
+        pad_pos = np.array(self.landing_pad_base_pos)
         horizontal_distance = np.linalg.norm(drone_pos[:2] - pad_pos[:2])
         vertical_distance = drone_pos[2] - pad_pos[2]
         drone_vel = np.array(self.vel[0])
@@ -259,7 +259,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         #eventually it will become speed of ground vehicle
         desired_xy_velocity = 0.0
         alpha = 30
-        UGV_pos = np.array(self._get_vehicle_position()[0])
+        UGV_pos = np.array(self._get_vehicle_position()[0])  # p.getLinkState(self.landing_pad_id
         UGV_vel = self._get_vehicle_velocity()
         drone_state = self._getDroneStateVector(0)
         drone_position = drone_state[0:3]
@@ -336,8 +336,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         """
         info = {}
         info['drone_pos'] = self.pos[0]
-        info['landing_pad_pos'] = self.landing_pad_pos
-        info['horizontal_distance'] = np.linalg.norm(np.array(self.pos[0][:2]) - np.array(self.landing_pad_pos[:2]))
+        info['landing_pad_base_pos'] = self.landing_pad_base_pos
+        info['horizontal_distance'] = np.linalg.norm(np.array(self.pos[0][:2]) - np.array(self.landing_pad_base_pos[:2]))
         return info
 
     def step(self, action):
