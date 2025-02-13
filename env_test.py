@@ -1,4 +1,5 @@
 import gym
+import numpy as np
 from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
@@ -12,9 +13,11 @@ env = VisionLandingAviary(
     gui=False,           # PyBullet GUI 창이 뜨므로 시각적으로 확인 가능
     obs=ObservationType.RGB,
     act=ActionType.RPM,
-    episode_len_sec=10,
+    episode_len_sec=1.0,
     stack_size=4,
-    record=False         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
+    record=True,         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
+    initial_xyzs=np.array([[0.0, 0.0, 4.0]], dtype=np.float64),
+    fov=108.0,
 )
 
 obs = env.reset()
