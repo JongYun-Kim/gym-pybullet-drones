@@ -1,18 +1,34 @@
-"""
-VisionLandingAviary.py
-
+""" VisionLandingAviary.py
 이 코드는 gym-pybullet-drones의 BaseSingleAgentAviary를 확장하여
-vision 기반 드론 자동 착륙 학습을 위한 Gym 환경을 구현한 예시입니다.
+vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
 
 주요 특징:
     - 드론 모델: CF2X (craziflie 2.0, x configuration)
+      - Total Joints: 5
+        - Link Index: 0, Name: prop0_link,          Position: ( 0.02800,   0.02803,   0.01349)
+        - Link Index: 1, Name: prop1_link,          Position: (-0.02800,   0.02803,   0.01349)
+        - Link Index: 2, Name: prop2_link,          Position: (-0.02800,  -0.02780,   0.01349)
+        - Link Index: 3, Name: prop3_link,          Position: ( 0.02800,  -0.02780,   0.01349)
+        - Link Index: 4, Name: center_of_mass_link, Position: (-3.300e-07, 2.831e-05, 0.0134901)
+      - 평면에 착륙하면 z = 0.135 (base==self.pos)
     - 헬리패드: 움직이는 착륙 패드 (simple car + helipad texture from parsed_pad.urdf in assets dir)
     - Observation: 드론 카메라에서 촬영한 RGB 이미지(알파 채널 제외)를 4 프레임 stack
-    - Action: 드론의 RPM (ActionType.RPM 예시)
-    - Reward: 드론과 착륙 패드 간의 상대 위치, 속도 등으로 산출 (착륙 성공 시 큰 보너스)
+    - Action: ActionType.RPM or VEL
+    - Reward: working on it...
     - 기록: 환경 외부 카메라 기록(BaseAviary의 record 옵션) 외에도, onboard 카메라 이미지가 PNG로 저장되며,
-             후에 ffmpeg를 이용해 동영상으로 변환 가능함.
+             후에 ffmpeg를 이용해 동영상으로 변환 가능.
 """
+# TODOs:
+# (1) rgb to grey scale
+# (2) _getDroneImages 메서드 제대로 된건지 확인 하기 (fov 등은 잘 되는데)
+# (3) _computeReward* 더 클린 하게 바꾸기 (읽기 좋게좀...; modularize for curriculum learning)
+# (4) _computeDone 체크 하기! contact 를 체크 해서 curriculum learning 에 통합 해야함.
+# (5) _checkLOS 만들기
+# (5) observation stack 의 간격을 체크할 것
+# (6) Randomizations
+#   (6-1) 착륙 패드 방향 랜덤화(yaw 로 구현 되어 있으나 확인 해 봐야함.)
+#   (6-2) 착륙 패드 texture 랜덤화
+#   (6-3) 드론 초기 위치 랜덤화 (반드시 vision 범위 내에서 시작할 것)
 import os
 import numpy as np
 import pybullet as p
@@ -21,6 +37,7 @@ from gym import spaces
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import BaseSingleAgentAviary, ObservationType, ActionType
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.BaseAviary import ImageType  # onboard 이미지 저장에 사용
+from gym_pybullet_drones.utils.utils import rgb2gray
 import subprocess
 
 class VisionLandingAviary(BaseSingleAgentAviary):
@@ -34,17 +51,19 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  gui: bool = False,
                  record: bool = False,
                  obs: ObservationType = ObservationType.RGB,
-                 act: ActionType = ActionType.RPM,
+                 act: ActionType = ActionType.VEL,
                  episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
                  stack_size: int = 4,             # 이미지 프레임 stack 개수
                  fov: float = 60.0,               # 카메라 시야각 (degree)
+                 use_grey_scale: bool = True,    # 흑백 이미지 사용 여부
                  ):
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
         self.assets_path = "./gym_pybullet_drones/assets"  # assumes pwd=='ur_project_dir/gym-pybullet-drones/'
         self.fov = fov
+        self.use_grey_scale = use_grey_scale
 
         # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
-        self.pad_center_link_idx = None
+        self.pad_link_center_idx = None
         self._resetLandingPad()
 
         # 상위 클래스 초기화: 이 호출 이후에 self.IMG_RES 등 필요한 속성이 생성됨
@@ -69,10 +88,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
     def _resetLandingPad(self):
         """
         착륙 패드 관련 파라미터 초기화:
-            - 초기 위치: [0, 0, 0.05] (높이는 약간 올려서 충돌 판정을 피함)
+            - 초기 위치: [x, y, z] (높이는 약간 올려서 충돌 판정을 피할 수도 있음)
             - 이동 반경 및 속도: 원형 궤적으로 움직이도록 설정
         """
-        self.landing_pad_base_start_pos = np.array([0.0, 0.0, 0.10])  # +0.16(main_body) -0.1(bar_joint) -0.1(wheel_joint) -0.06(wheel size)
+        self.landing_pad_base_start_pos = np.array([0.0, 0.0, 0.0])
         self.landing_pad_amplitude = 1.0   # 원의 반지름 (미터)
         self.landing_pad_omega = 0.2       # 각속도 (rad/s)
         self.landing_pad_base_pos = self.landing_pad_base_start_pos.tolist()
@@ -89,6 +108,16 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         - Body ID: 0, Name: plane  as idk yet
         - Body ID: 1, Name: cf2    as self.DRONE_IDS
         - Body ID: 2, Name: car    as self.landing_pad_id
+        Total Joints: 9 (car)
+        Link Index: 0, Name: main_body,              Position: (1.0, 0.0, 0.16)
+        Link Index: 1, Name: rear_bar_link,          Position: (0.84, 0, 0.06)
+        Link Index: 2, Name: back_left_wheel_link,   Position: (0.84, 0.1, 0.06)
+        Link Index: 3, Name: back_right_wheel_link,  Position: (0.84, -0.1, 0.06)
+        Link Index: 4, Name: bar_link,               Position: (1.16, 0, 0.06)
+        Link Index: 5, Name: front_left_wheel_link,  Position: (1.16, -0.1, 0.06)
+        Link Index: 6, Name: front_right_wheel_link, Position: (1.16, 0.1, 0.06)
+        Link Index: 7, Name: holder,                 Position: (1.0, 0.0, 0.235)
+        Link Index: 8, Name: heliport_base,          Position: (1.0, 0.0, 0.2725)
         """
         pad_urdf = self.assets_path + "/parsed_pad.urdf"
         yaw = np.random.uniform(-np.pi/12.0, np.pi/12.0)
@@ -96,7 +125,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         pad_start_orientation_quaternion = p.getQuaternionFromEuler(pad_start_orientation_euler)
 
         print("PyBullet is searching in:", os.getcwd())  # Check current directory
-        self.pad_center_link_idx = 7
+        self.pad_link_center_idx = 8
         self.landing_pad_id = p.loadURDF(fileName=pad_urdf,
                                          basePosition=self.landing_pad_base_pos,
                                          baseOrientation=pad_start_orientation_quaternion,
@@ -109,8 +138,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         그리고 p.resetBasePositionAndOrientation()를 통해 패드의 위치를 갱신함.
         """
         t = self.step_counter * self.TIMESTEP
-        x = self.landing_pad_base_start_pos[0] + self.landing_pad_amplitude * np.cos(self.landing_pad_omega * t)
-        y = self.landing_pad_base_start_pos[1] + self.landing_pad_amplitude * np.sin(self.landing_pad_omega * t)
+        # x = self.landing_pad_base_start_pos[0] + self.landing_pad_amplitude * np.cos(self.landing_pad_omega * t)
+        x = self.landing_pad_base_start_pos[0]
+        # y = self.landing_pad_base_start_pos[1] + self.landing_pad_amplitude * np.sin(self.landing_pad_omega * t)
+        y = self.landing_pad_base_start_pos[1]
         z = self.landing_pad_base_start_pos[2]
         self.landing_pad_base_pos = [x, y, z]
         p.resetBasePositionAndOrientation(self.landing_pad_id,
@@ -133,8 +164,11 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self._updateLandingPad()
 
         # 카메라에서 RGB 이미지를 받아 알파 채널은 제외 (shape: [H, W, 3])
-        rgb, _, _ = self._getDroneImages(0, segmentation=False)
-        frame = rgb[..., :3]
+        # shape:
+        drone_img, _, _ = self._getDroneImages(0, segmentation=False, grey_scale=True)
+        # if self.use_grey_scale:
+
+        frame = drone_img if self.use_grey_scale else drone_img[:, :, :3]
         self.frame_buffer = [frame for _ in range(self.stack_size)]
 
         # onboard 이미지 저장 (record=True이면)
@@ -145,7 +179,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
         return self._get_stacked_obs()
 
-    def _getDroneImages(self, nth_drone, segmentation: bool=True):
+    def _getDroneImages(self, nth_drone, segmentation: bool=True, grey_scale: bool=False):
         if self.IMG_RES is None:
             print("[ERROR] in VisionLandingAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
             exit()
@@ -189,7 +223,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         rgb = np.reshape(rgb, (h, w, 4))
         dep = np.reshape(dep, (h, w))
         seg = np.reshape(seg, (h, w))
-        return rgb, dep, seg
+        if grey_scale:
+            return rgb2gray(rgb), dep, seg
+        else:
+            return rgb, dep, seg
 
     def _get_stacked_obs(self):
         """
@@ -262,17 +299,17 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
     def _get_pad_center_position(self):
         # linkWorldPosition: (vec3, list of 3 floats): Cartesian position of center of mass
-        position = p.getLinkState(self.landing_pad_id, self.pad_center_link_idx, physicsClientId=self.CLIENT)[0]
-        return np.array(position, dtype=np.float64)
+        position = p.getLinkState(self.landing_pad_id, self.pad_link_center_idx, physicsClientId=self.CLIENT)[0]
+        return np.array(position, dtype=np.float64)  # (3,)
 
     def _get_pad_center_orientation(self, quaternion=True):
-        orientation_in_quaternion = p.getLinkState(self.landing_pad_id, self.pad_center_link_idx, physicsClientId=self.CLIENT)[1]
+        orientation_in_quaternion = p.getLinkState(self.landing_pad_id, self.pad_link_center_idx, physicsClientId=self.CLIENT)[1]
         if quaternion:
             # linkWorldOrientation: (vec4, list of 4 floats): Cartesian orientation of center of mass in XYZW quaternion
-            return np.array(orientation_in_quaternion, dtype=np.float64)
+            return np.array(orientation_in_quaternion, dtype=np.float64)  # (4,)
         else:
             # convert quaternion to euler angles (roll, pitch, yaw) -- ROS URDF convention
-            return np.array(p.getEulerFromQuaternion(orientation_in_quaternion), dtype=np.float64)
+            return np.array(p.getEulerFromQuaternion(orientation_in_quaternion), dtype=np.float64)  # (3,)
 
     def _computeReward_thanks_to_Pawel(self):
         # Parameters

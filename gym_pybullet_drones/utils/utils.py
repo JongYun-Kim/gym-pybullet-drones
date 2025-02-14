@@ -131,3 +131,10 @@ def nnlsRPM(thrust,
                   "\t\tResidual: {:.2f}".format(res))
         sq_rpm = sol
     return np.sqrt(sq_rpm)
+
+def rgb2gray(rgb):
+    # 차원 관리 잘해라. 들어오는거 알파채널까지 4채널 일수도 있고, 채널 차원 순서가 다를 수도 있음. 지금은 (h,w,c)로 가정하고 있음.
+    r, g, b = rgb[:,:,0], rgb[:,:,1], rgb[:,:,2]
+    gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
+
+    return gray
