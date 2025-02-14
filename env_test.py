@@ -18,6 +18,7 @@ env = VisionLandingAviary(
     record=True,         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
     initial_xyzs=np.array([[0.0, 0.0, 0.55]], dtype=np.float64),
     fov=108.0,
+    use_grey_scale=True,
 )
 
 obs = env.reset()

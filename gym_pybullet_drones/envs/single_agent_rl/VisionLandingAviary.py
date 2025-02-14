@@ -262,7 +262,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         """
         height = int(self.IMG_RES[1])
         width = int(self.IMG_RES[0])
-        channels = 3 * self.stack_size
+        channels = 1 if self.use_grey_scale else 3
+        channels = channels* self.stack_size
         return spaces.Box(low=0, high=255, shape=(height, width, channels), dtype=np.uint8)
 
     def _computeReward(self):
