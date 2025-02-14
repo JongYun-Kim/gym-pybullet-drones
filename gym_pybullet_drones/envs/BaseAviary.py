@@ -1,17 +1,18 @@
 import os
-from sys import platform
+# from sys import platform
 import time
 import collections.abc as collections
 from datetime import datetime
 from enum import Enum
 import xml.etree.ElementTree as etxml
 from PIL import Image
-import pkgutil
-egl = pkgutil.get_loader('eglRenderer')
+# import pkgutil
+# egl = pkgutil.get_loader('eglRenderer')
 import numpy as np
 import pybullet as p
 import pybullet_data
 import gym
+from typing import TypeVar, Generic, Tuple, Union, Optional, SupportsFloat
 
 class DroneModel(Enum):
     """Drone models enumeration class."""
@@ -98,8 +99,8 @@ class BaseAviary(gym.Env):
         self.G = 9.8
         self.RAD2DEG = 180/np.pi
         self.DEG2RAD = np.pi/180
-        self.SIM_FREQ = freq
-        self.TIMESTEP = 1./self.SIM_FREQ
+        self.SIM_FREQ = freq              # Hz; simulation frequency (e.g. 240Hz)
+        self.TIMESTEP = 1./self.SIM_FREQ  # seconds                  (e.g. 1/240 s)
         self.AGGR_PHY_STEPS = aggregate_phy_steps
         ## Parameters
         self.NUM_DRONES = num_drones
@@ -200,23 +201,23 @@ class BaseAviary(gym.Env):
                 self.VID_HEIGHT=int(480)
                 self.FRAME_PER_SEC = 24
                 self.CAPTURE_FREQ = int(self.SIM_FREQ/self.FRAME_PER_SEC)
-                self.CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=3,
-                                                                    yaw=-30,
-                                                                    pitch=-30,
+                self.CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=1.4,
+                                                                    yaw= 0,
+                                                                    pitch=-12,
                                                                     roll=0,
-                                                                    cameraTargetPosition=[0, 0, 0],
+                                                                    cameraTargetPosition=[0, 0, 0.2725],
                                                                     upAxisIndex=2,
                                                                     physicsClientId=self.CLIENT
                                                                     )
-                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=30.0,
+                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=20.0,
                                                             aspect=self.VID_WIDTH/self.VID_HEIGHT,
                                                             nearVal=0.1,
                                                             farVal=1000.0
                                                             )
         ## Set initial poses
         if initial_xyzs is None:
-            self.INIT_XYZS = np.vstack([np.array([x*4*self.L for x in range(self.NUM_DRONES)]), \
-                                        np.array([y*4*self.L for y in range(self.NUM_DRONES)]), \
+            self.INIT_XYZS = np.vstack([np.array([x*4*self.L for x in range(self.NUM_DRONES)]),
+                                        np.array([y*4*self.L for y in range(self.NUM_DRONES)]),
                                         np.ones(self.NUM_DRONES) * (self.COLLISION_H/2-self.COLLISION_Z_OFFSET+.1)]).transpose().reshape(self.NUM_DRONES, 3)
         elif np.array(initial_xyzs).shape == (self.NUM_DRONES,3):
             self.INIT_XYZS = initial_xyzs
@@ -238,7 +239,12 @@ class BaseAviary(gym.Env):
         ## Start video recording
         self._startVideoRecording()
 
-    def reset(self):
+    def reset(self,
+              *,
+              seed: Optional[int] = None,  # gym version...; compatibility
+              return_info: bool = False,
+              options: Optional[dict] = None,
+              ):
         """Resets the environment.
         Returns
         ndarray | dict[..]
@@ -361,10 +367,7 @@ class BaseAviary(gym.Env):
         self.step_counter = self.step_counter + (1 * self.AGGR_PHY_STEPS)
         return obs, reward, done, info
 
-    def render(self,
-               mode='human',
-               close=False
-               ):
+    def render(self, mode='human', close=False):
         """Prints a textual output of the environment.
         Parameters
         mode : str, optional
@@ -418,7 +421,7 @@ class BaseAviary(gym.Env):
         self.first_render_call = True
         self.X_AX = -1*np.ones(self.NUM_DRONES)
         self.Y_AX = -1*np.ones(self.NUM_DRONES)
-        self.Z_AX = -1*np.ones(self.NUM_DRONES);
+        self.Z_AX = -1*np.ones(self.NUM_DRONES)
         self.GUI_INPUT_TEXT = -1*np.ones(self.NUM_DRONES)
         self.USE_GUI_RPM=False
         self.last_input_switch = 0
@@ -567,6 +570,7 @@ class BaseAviary(gym.Env):
         fram_num: int, optional
             Frame number to append to the PNG's filename.
         """
+        temp = None
         if img_type == ImageType.RGB:
             (Image.fromarray(img_input.astype('uint8'), 'RGBA')).save(path+"frame_"+str(frame_num)+".png")
         elif img_type == ImageType.DEP:
@@ -745,6 +749,8 @@ class BaseAviary(gym.Env):
         elif self.DRONE_MODEL==DroneModel.CF2P or self.DRONE_MODEL==DroneModel.HB:
             x_torque = (forces[1] - forces[3]) * self.L
             y_torque = (-forces[0] + forces[2]) * self.L
+        else:
+            raise Exception("[ERROR] in BaseAviary._dynamics(), unknown drone model")
         torques = np.array([x_torque, y_torque, z_torque])
         torques = torques - np.cross(rpy_rates, np.dot(self.J, rpy_rates))
         rpy_rates_deriv = np.dot(self.J_INV, torques)
