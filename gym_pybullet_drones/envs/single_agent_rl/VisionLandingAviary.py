@@ -163,12 +163,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self._resetLandingPad()
         self._updateLandingPad()
 
-        # 카메라에서 RGB 이미지를 받아 알파 채널은 제외 (shape: [H, W, 3])
-        # shape:
-        drone_img, _, _ = self._getDroneImages(0, segmentation=False, grey_scale=True)
-        # if self.use_grey_scale:
-
-        frame = drone_img if self.use_grey_scale else drone_img[:, :, :3]
+        # 카메라에서 RGB 이미지를 받아 알파 채널 포함됨 (shape: [H, W, 4])
+        rgb, _, _ = self._getDroneImages(0, segmentation=False)
+        frame = rgb[:, :, :3]
         self.frame_buffer = [frame for _ in range(self.stack_size)]
 
         # onboard 이미지 저장 (record=True이면)
@@ -223,10 +220,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         rgb = np.reshape(rgb, (h, w, 4))
         dep = np.reshape(dep, (h, w))
         seg = np.reshape(seg, (h, w))
-        if grey_scale:
-            return rgb2gray(rgb), dep, seg
-        else:
-            return rgb, dep, seg
+        return rgb, dep, seg
 
     def _get_stacked_obs(self):
         """
