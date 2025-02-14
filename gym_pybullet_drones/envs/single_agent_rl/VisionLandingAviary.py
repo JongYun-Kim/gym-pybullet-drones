@@ -40,6 +40,7 @@ from gym_pybullet_drones.envs.BaseAviary import ImageType  # onboard 이미지 �
 from gym_pybullet_drones.utils.utils import rgb2gray
 import subprocess
 
+
 class VisionLandingAviary(BaseSingleAgentAviary):
     def __init__(self,
                  drone_model: DroneModel = DroneModel.CF2X,
@@ -50,17 +51,19 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  aggregate_phy_steps: int = 1,
                  gui: bool = False,
                  record: bool = False,
-                 obs: ObservationType = ObservationType.RGB,
+                 obs: ObservationType = ObservationType.BW,
                  act: ActionType = ActionType.VEL,
                  episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
                  stack_size: int = 4,             # 이미지 프레임 stack 개수
                  fov: float = 60.0,               # 카메라 시야각 (degree)
-                 use_grey_scale: bool = True,    # 흑백 이미지 사용 여부
                  ):
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
         self.assets_path = "./gym_pybullet_drones/assets"  # assumes pwd=='ur_project_dir/gym-pybullet-drones/'
         self.fov = fov
-        self.use_grey_scale = use_grey_scale
+
+        # 그레이 스케일 사용 여부 (Complicated; but tried to maintain backward compatibility)
+        self.use_grey_scale = True if obs == ObservationType.BW else False
+        obs = ObservationType.RGB if obs == ObservationType.BW else obs
 
         # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
         self.pad_link_center_idx = None
@@ -91,7 +94,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             - 초기 위치: [x, y, z] (높이는 약간 올려서 충돌 판정을 피할 수도 있음)
             - 이동 반경 및 속도: 원형 궤적으로 움직이도록 설정
         """
-        self.landing_pad_base_start_pos = np.array([0.0, 0.0, 0.0])
+        self.landing_pad_base_start_pos = np.array([1.0, 0.0, 0.0])
         self.landing_pad_amplitude = 1.0   # 원의 반지름 (미터)
         self.landing_pad_omega = 0.2       # 각속도 (rad/s)
         self.landing_pad_base_pos = self.landing_pad_base_start_pos.tolist()
@@ -263,7 +266,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         height = int(self.IMG_RES[1])
         width = int(self.IMG_RES[0])
         channels = 1 if self.use_grey_scale else 3
-        channels = channels* self.stack_size
+        channels *= self.stack_size
         return spaces.Box(low=0, high=255, shape=(height, width, channels), dtype=np.uint8)
 
     def _computeReward(self):
@@ -374,7 +377,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 드론이 지면에 충돌(높이 <= 0)
         """
         done = False
-        drone_pos = np.array(self.pos[0])
+        drone_pos = np.array(self.pos[0])  # nth_drone=0
         if self.step_counter * self.TIMESTEP >= self.EPISODE_LEN_SEC:
             done = True
         if drone_pos[2] <= 0.0:
