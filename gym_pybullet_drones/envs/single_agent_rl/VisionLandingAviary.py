@@ -94,7 +94,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             - 초기 위치: [x, y, z] (높이는 약간 올려서 충돌 판정을 피할 수도 있음)
             - 이동 반경 및 속도: 원형 궤적으로 움직이도록 설정
         """
-        self.landing_pad_base_start_pos = np.array([1.0, 0.0, 0.0])
+        self.landing_pad_base_start_pos = np.array([0.0, 0.0, 0.0])
         self.landing_pad_amplitude = 1.0   # 원의 반지름 (미터)
         self.landing_pad_omega = 0.2       # 각속도 (rad/s)
         self.landing_pad_base_pos = self.landing_pad_base_start_pos.tolist()
