@@ -166,17 +166,18 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # 카메라에서 RGB 이미지를 받아 알파 채널 포함됨 (shape: [H, W, 4])
         rgb, _, _ = self._getDroneImages(0, segmentation=False)
         frame = rgb[:, :, :3]
+        frame = rgb2gray(frame, norm=False, keepdims=True) if self.use_grey_scale else frame
         self.frame_buffer = [frame for _ in range(self.stack_size)]
 
         # onboard 이미지 저장 (record=True이면)
         if self.RECORD and (self.step_counter % self.IMG_CAPTURE_FREQ == 0):
-            self._exportImage(img_type=ImageType.RGB,
+            self._exportImage(img_type=ImageType.BW if self.use_grey_scale else ImageType.RGB,
                               img_input=rgb,
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
         return self._get_stacked_obs()
 
-    def _getDroneImages(self, nth_drone, segmentation: bool=True, grey_scale: bool=False):
+    def _getDroneImages(self, nth_drone, segmentation: bool=True):
         if self.IMG_RES is None:
             print("[ERROR] in VisionLandingAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
             exit()
@@ -239,10 +240,11 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         """
         rgb, _, _ = self._getDroneImages(0, segmentation=False)
         frame = rgb[..., :3]
+        frame = rgb2gray(frame, norm=False, keepdims=True) if self.use_grey_scale else frame
 
         # onboard 이미지 저장 (record=True이면)
         if self.RECORD and (self.step_counter % self.IMG_CAPTURE_FREQ == 0):
-            self._exportImage(img_type=ImageType.RGB,
+            self._exportImage(img_type=ImageType.BW if self.use_grey_scale else ImageType.RGB,
                               img_input=rgb,
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))

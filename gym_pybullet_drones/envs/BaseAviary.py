@@ -578,7 +578,8 @@ class BaseAviary(gym.Env):
         elif img_type == ImageType.SEG:
             temp = ((img_input-np.min(img_input)) * 255 / (np.max(img_input)-np.min(img_input))).astype('uint8')
         elif img_type == ImageType.BW:
-            temp = (np.sum(img_input[:, :, 0:2], axis=2) / 3).astype('uint8')
+            temp = (np.sum(img_input[:, :, 0:3], axis=2) / 3).astype('uint8')
+            # temp = (np.sum(img_input[:, :, 0:2], axis=2) / 3).astype('uint8')  # original in v1.0.0
         else:
             print("[ERROR] in BaseAviary._exportImage(), unknown ImageType")
             exit()

@@ -132,9 +132,15 @@ def nnlsRPM(thrust,
         sq_rpm = sol
     return np.sqrt(sq_rpm)
 
-def rgb2gray(rgb):
+def rgb2gray(rgb, norm=False, keepdims=True):
     # 차원 관리 잘해라. 들어오는거 알파채널까지 4채널 일수도 있고, 채널 차원 순서가 다를 수도 있음. 지금은 (h,w,c)로 가정하고 있음.
-    r, g, b = rgb[:,:,0], rgb[:,:,1], rgb[:,:,2]
-    gray = 0.2989 * r + 0.5870 * g + 0.1140 * b
 
-    return gray
+    assert rgb.ndim == 3, "Input image must be 3-dimensional"
+    assert rgb.shape[2] == 3 or rgb.shape[2] == 4, "Input image must have 3 or 4 channels (RGB or RGBA)"
+    assert rgb.dtype == 'uint8', "Input image must be of type uint8"
+
+    if not norm:  # 0~255
+        bw_img = (np.sum(rgb[:, :, 0:3], axis=2, keepdims=keepdims) / 3).astype('uint8')
+    else:  # 0~1
+        bw_img = (np.mean(rgb[:, :, 0:3], axis=2, dtype=np.float64, keepdims=keepdims)) / 255.0
+    return bw_img

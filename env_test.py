@@ -12,18 +12,19 @@ env = VisionLandingAviary(
     physics=Physics.PYB,
     gui=False,           # PyBullet GUI 창이 뜨므로 시각적으로 확인 가능
     obs=ObservationType.RGB,
-    act=ActionType.RPM,
-    episode_len_sec=1.0,
+    act=ActionType.VEL,
+    episode_len_sec=1.5,
     stack_size=4,
     record=True,         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
-    initial_xyzs=np.array([[0.0, 0.0, 4.0]], dtype=np.float64),
+    initial_xyzs=np.array([[0.0, 0.0, 0.55]], dtype=np.float64),
     fov=108.0,
 )
 
 obs = env.reset()
 done = False
 while not done:
-    action = env.action_space.sample()  # 임의의 액션 (학습 시에는 정책의 출력 사용)
+    # action = env.action_space.sample()  # 임의의 액션 (학습 시에는 정책의 출력 사용)
+    action = np.array([0.0, 0.0, -1.0, 0.8], dtype=np.float32)
     obs, reward, done, info = env.step(action)
     # env.render()는 텍스트 출력이지만, GUI 창으로 시각적으로 확인 가능
     env.render()
