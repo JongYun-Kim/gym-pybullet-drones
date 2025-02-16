@@ -61,7 +61,9 @@ class BaseAviary(gym.Env):
                  obstacles=False,
                  user_debug_gui=True,
                  vision_attributes=False,
-                 dynamics_attributes=False
+                 dynamics_attributes=False,
+                 img_res: np.ndarray = np.array([64, 48]),
+                 img_fps: int = 24,
                  ):
         """Initialization of a generic aviary environment.
         Parameters
@@ -147,8 +149,8 @@ class BaseAviary(gym.Env):
         ## Create attributes for vision tasks
         self.VISION_ATTR = vision_attributes
         if self.VISION_ATTR:
-            self.IMG_RES = np.array([64, 48])
-            self.IMG_FRAME_PER_SEC = 24
+            self.IMG_RES = img_res
+            self.IMG_FRAME_PER_SEC = img_fps
             self.IMG_CAPTURE_FREQ = int(self.SIM_FREQ/self.IMG_FRAME_PER_SEC)
             self.rgb = np.zeros(((self.NUM_DRONES, self.IMG_RES[1], self.IMG_RES[0], 4)))
             self.dep = np.ones(((self.NUM_DRONES, self.IMG_RES[1], self.IMG_RES[0])))
@@ -491,7 +493,6 @@ class BaseAviary(gym.Env):
         Parameters
         nth_drone : int
             The ordinal number/position of the desired drone in list self.DRONE_IDS.
-
         Returns
         ndarray
             (20,)-shaped array of floats containing the state vector of the n-th drone.

@@ -9,13 +9,12 @@ import matplotlib.pyplot as plt
 
 env = VisionLandingAviary(
     drone_model=DroneModel.CF2X,
-    physics=Physics.PYB,
     gui=False,           # PyBullet GUI 창이 뜨므로 시각적으로 확인 가능
     obs=ObservationType.BW,
     act=ActionType.VEL,
-    episode_len_sec=1.5,
+    episode_len_sec=1.0,
     stack_size=4,
-    record=True,         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
+    record=False,         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
     initial_xyzs=np.array([[0.0, 0.0, 0.55]], dtype=np.float64),
     fov=108.0,
 )

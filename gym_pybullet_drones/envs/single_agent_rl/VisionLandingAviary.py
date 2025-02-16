@@ -19,7 +19,7 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
              후에 ffmpeg를 이용해 동영상으로 변환 가능.
 """
 # TODOs:
-# (1) rgb to grey scale
+# (o) rgb to grey scale
 # (2) _getDroneImages 메서드 제대로 된건지 확인 하기 (fov 등은 잘 되는데)
 # (3) _computeReward* 더 클린 하게 바꾸기 (읽기 좋게좀...; modularize for curriculum learning)
 # (4) _computeDone 체크 하기! contact 를 체크 해서 curriculum learning 에 통합 해야함.
@@ -48,21 +48,25 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  initial_rpys=None,
                  physics: Physics = Physics.PYB,
                  freq: int = 240,
-                 aggregate_phy_steps: int = 1,
+                 aggregate_phy_steps: int = 10,
                  gui: bool = False,
                  record: bool = False,
                  obs: ObservationType = ObservationType.BW,
                  act: ActionType = ActionType.VEL,
+                 channel_first: bool = True,     # nn.Conv2d() 사용시 channel_first=True
+                 stack_size: int = 4,            # 이미지 프레임 stack 개수
+                 fov: float = 60.0,              # drone 카메라 시야각 (degree)
+                 img_res: np.ndarray = np.array([84, 84]),  # original: np.array([64, 48])
+                 img_fps: int = 24,
                  episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
-                 stack_size: int = 4,             # 이미지 프레임 stack 개수
-                 fov: float = 60.0,               # 카메라 시야각 (degree)
                  ):
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
         self.assets_path = "./gym_pybullet_drones/assets"  # assumes pwd=='ur_project_dir/gym-pybullet-drones/'
         self.fov = fov
+        self.channel_first = channel_first
 
         # 그레이 스케일 사용 여부 (Complicated; but tried to maintain backward compatibility)
-        self.use_grey_scale = True if obs == ObservationType.BW else False
+        self.use_gray_scale = True if obs == ObservationType.BW else False
         obs = ObservationType.RGB if obs == ObservationType.BW else obs
 
         # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
@@ -80,13 +84,24 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                          record=record,
                          obs=obs,
                          act=act,
-                         episode_len_sec=episode_len_sec)
+                         episode_len_sec=episode_len_sec,
+                         img_res=img_res,
+                         img_fps=img_fps)
         # onboard 이미지 저장 경로 생성 (이미 BaseAviary에서 설정됨)
         # 예: self.ONBOARD_IMG_PATH = ...  (이미 BaseAviary.__init__() 내에서 할당)
 
         # 이제 IMG_RES가 정의되었으므로 dummy_frame을 생성하고 frame_buffer 초기화
-        dummy_frame = np.zeros((int(self.IMG_RES[1]), int(self.IMG_RES[0]), 3), dtype=np.uint8)
-        self.frame_buffer = [dummy_frame for _ in range(self.stack_size)]
+        height = int(self.IMG_RES[1])
+        width = int(self.IMG_RES[0])
+        num_channels = 1 if self.use_gray_scale else 3
+
+        if self.channel_first:  # (C, H, W)
+            dummy_frame = np.zeros((num_channels, height, width), dtype=np.uint8)
+        else:                   # (H, W, C)
+            dummy_frame = np.zeros((height, width, num_channels), dtype=np.uint8)
+
+        # 버퍼를 채워 넣음 (원하는 경우 dummy_frame.copy() 사용)
+        self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
 
     def _resetLandingPad(self):
         """
@@ -168,17 +183,15 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # 카메라에서 RGB 이미지를 받아 알파 채널 포함됨 (shape: [H, W, 4])
         rgb, _, _ = self._getDroneImages(0, segmentation=False)
-        frame = rgb[:, :, :3]
-        frame = rgb2gray(frame, norm=False, keepdims=True) if self.use_grey_scale else frame
-        self.frame_buffer = [frame for _ in range(self.stack_size)]
 
         # onboard 이미지 저장 (record=True이면)
         if self.RECORD and (self.step_counter % self.IMG_CAPTURE_FREQ == 0):
-            self._exportImage(img_type=ImageType.BW if self.use_grey_scale else ImageType.RGB,
+            self._exportImage(img_type=ImageType.BW if self.use_gray_scale else ImageType.RGB,
                               img_input=rgb,
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
-        return self._get_stacked_obs()
+
+        return self._get_stacked_obs(rgb)
 
     def _getDroneImages(self, nth_drone, segmentation: bool=True):
         if self.IMG_RES is None:
@@ -226,12 +239,29 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         seg = np.reshape(seg, (h, w))
         return rgb, dep, seg
 
-    def _get_stacked_obs(self):
+    def _get_stacked_obs(self, rgb):
         """
         프레임 버퍼에 저장된 최신 이미지들을 채널 방향으로 이어붙여 stacked observation 생성.
         예: 각 프레임이 (H, W, 3)이라면 stacked_obs의 shape는 (H, W, 3*stack_size)가 됨.
         """
-        return np.concatenate(self.frame_buffer, axis=-1)
+        # RGB 채널만 사용
+        if self.channel_first:
+            # 채널을 마지막 축에서 첫 번째 축으로 이동: (H, W, 3) → (3, H, W)
+            frame = np.moveaxis(rgb[:, :, :3], -1, 0)
+        else:
+            frame = rgb[:, :, :3]
+
+        # 그레이스케일 변환 적용 (channel_first 여부를 인자로 전달)
+        if self.use_gray_scale:
+            frame = rgb2gray(frame, norm=False, keepdims=True, channel_first=self.channel_first)
+
+        # 프레임 버퍼 업데이트
+        self.frame_buffer.pop(0)
+        self.frame_buffer.append(frame)
+
+        # 채널 방향으로 이어붙이기
+        channel_axis = 0 if self.channel_first else -1
+        return np.concatenate(self.frame_buffer, axis=channel_axis)
 
     def _computeObs(self):
         """
@@ -242,32 +272,35 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - stack된 이미지를 반환
         """
         rgb, _, _ = self._getDroneImages(0, segmentation=False)
-        frame = rgb[..., :3]
-        frame = rgb2gray(frame, norm=False, keepdims=True) if self.use_grey_scale else frame
 
         # onboard 이미지 저장 (record=True이면)
         if self.RECORD and (self.step_counter % self.IMG_CAPTURE_FREQ == 0):
-            self._exportImage(img_type=ImageType.BW if self.use_grey_scale else ImageType.RGB,
+            self._exportImage(img_type=ImageType.BW if self.use_gray_scale else ImageType.RGB,
                               img_input=rgb,
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
 
-        self.frame_buffer.pop(0)
-        self.frame_buffer.append(frame)
-        return self._get_stacked_obs()
+        return self._get_stacked_obs(rgb)
 
     def _observationSpace(self):
         """
         Observation space 재정의:
           - 각 카메라 프레임의 크기는 IMG_RES (예: [64, 48])
-          - RGB 이미지이므로 한 프레임당 채널 수는 3
-          - stack_size 프레임을 쌓으므로 최종 shape는 (IMG_RES[1], IMG_RES[0], 3*stack_size)
+          - RGB 이미지이면 한 프레임당 채널 수는 3, 그레이스케일이면 1
+          - stack_size 프레임을 쌓으므로 최종 shape는:
+                * channel_first=True → (channels*stack_size, height, width)
+                * channel_first=False → (height, width, channels*stack_size)
         """
         height = int(self.IMG_RES[1])
         width = int(self.IMG_RES[0])
-        channels = 1 if self.use_grey_scale else 3
-        channels *= self.stack_size
-        return spaces.Box(low=0, high=255, shape=(height, width, channels), dtype=np.uint8)
+        channels = 1 if self.use_gray_scale else 3
+
+        if self.channel_first:
+            shape = (channels * self.stack_size, height, width)
+        else:
+            shape = (height, width, channels * self.stack_size)
+
+        return spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
 
     def _computeReward(self):
         """

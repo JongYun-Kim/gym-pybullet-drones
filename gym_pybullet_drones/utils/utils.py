@@ -132,15 +132,34 @@ def nnlsRPM(thrust,
         sq_rpm = sol
     return np.sqrt(sq_rpm)
 
-def rgb2gray(rgb, norm=False, keepdims=True):
-    # 차원 관리 잘해라. 들어오는거 알파채널까지 4채널 일수도 있고, 채널 차원 순서가 다를 수도 있음. 지금은 (h,w,c)로 가정하고 있음.
+def rgb2gray(rgb, norm=False, keepdims=True, channel_first=True):
+    """
+    Convert an RGB image to grayscale.
+    Parameters:
+        rgb (np.ndarray): Input Image (either (C, H, W) or (H, W, C); can have rgba, i.e. c==4)
+        norm (bool): False: 0~255, True: 0~1 (normalized)
+        keepdims (bool): whether to keep the channel dimension after the conversion
+        channel_first (bool): True: rgb-(C, H, W), False: rgb-(H, W, C)
+    Returns:
+        np.ndarray: Grayscale image (either ((1,) H, W) or (H, W, (1)))
+    """
+    assert rgb.ndim==3, f"Input image must have 3 dimensions, but got {rgb.ndim}"
+    # Get the channel axis (0 or 2)
+    channel_axis = 0 if channel_first else 2
 
-    assert rgb.ndim == 3, "Input image must be 3-dimensional"
-    assert rgb.shape[2] == 3 or rgb.shape[2] == 4, "Input image must have 3 or 4 channels (RGB or RGBA)"
+    # Get the number of channels
+    channels = rgb.shape[channel_axis]
+    assert channels == 3 or channels == 4, f"Input image must have 3 or 4 channels along axis {channel_axis}"
     assert rgb.dtype == 'uint8', "Input image must be of type uint8"
 
+    # Extract RGB part
+    rgb_part = rgb[:3, ...] if channel_first else rgb[..., :3]
+
+    # Convert to grayscale, and normalize if necessary
     if not norm:  # 0~255
-        bw_img = (np.sum(rgb[:, :, 0:3], axis=2, keepdims=keepdims) / 3).astype('uint8')
+        # np.sum에서 axis를 channel_axis로 사용
+        bw_img = (np.sum(rgb_part, axis=channel_axis, keepdims=keepdims) / 3).astype('uint8')
     else:  # 0~1
-        bw_img = (np.mean(rgb[:, :, 0:3], axis=2, dtype=np.float64, keepdims=keepdims)) / 255.0
+        bw_img = (np.mean(rgb_part, axis=channel_axis, dtype=np.float64, keepdims=keepdims)) / 255.0
+
     return bw_img
