@@ -93,7 +93,7 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         # (0) Get model config
         # (0-1) Load model config
         if model_config is not None:
-            self.cfg: VisionLanderPPOConfig = model_config["custom_model_config"]
+            self.cfg: VisionLanderPPOConfig = model_config["custom_model_config"]["config_instance"]
         else:
             raise ValueError("Model config is None! Please you MUST provide a model config in dict.")
         if self.cfg.ru_debugging:
@@ -163,9 +163,10 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             policy_layers.append(nn.ReLU())
             in_size = out_size
         # 최종적으로 action_space.n(=4)차원으로 매핑
-        policy_layers.append(nn.Linear(in_size, self.action_space.n))
+        # policy_layers.append(nn.Linear(in_size, self.action_space.n))
+        policy_layers.append(nn.Linear(in_size, num_outputs))
         # Build the policy network
-        # Output shape: (batch_size, 4 or 8)
+        # Output shape: (batch_size, num_outputs)
         self.policy = nn.Sequential(*policy_layers)
 
         # (4) Value network (critic)
@@ -194,12 +195,14 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             seq_lens: TensorType,
     ) -> (TensorType, List[TensorType]):
 
+        batch_size = input_dict["obs"]["images"].shape[0]
+
         obs_dict = input_dict["obs"]
         stacked_images = obs_dict["images"]  # shape: (batch_size, 4, 84, 84)
         if self.cfg.ru_debugging:
             assert stacked_images.dtype == torch.float64, f"stacked_images.dtype: {stacked_images.dtype}"
         stacked_images /= 255.0  # Normalize the images
-        drone_state = obs_dict["drone_state"]  # shape: (batch_size, 21)
+        drone_state = obs_dict["drone_state"]  # shape: (batch_size, 20)
 
         # (1) Encoder forward
         x = self.encoder(stacked_images)               # (batch_size, C, H, W)
@@ -212,7 +215,7 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         x = self.embedding(x)                              # (batch_size, embed_dim)
 
         # (3) Policy (actor) forward
-        logits = self.policy(x)                            # (batch_size, 8)
+        logits = self.policy(x)                            # (batch_size, num_outputs)
 
         # (4) Value (critic) forward
         self._value_out = self.critic(x)             # (batch_size, 1)
