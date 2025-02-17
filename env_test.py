@@ -14,7 +14,8 @@ env = VisionLandingAviary(
     act=ActionType.VEL,
     episode_len_sec=1.0,
     stack_size=4,
-    record=False,         # 비디오 녹화 옵션 (GUI 모드에서는 p.startStateLogging() 사용)
+    record=True,
+    # record=False,
     initial_xyzs=np.array([[0.0, 0.0, 0.55]], dtype=np.float64),
     fov=108.0,
 )
