@@ -19,20 +19,25 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
              후에 ffmpeg를 이용해 동영상으로 변환 가능.
 """
 # TODOs:
-# (o) rgb to grey scale
+# - [o] rgb to grey scale
+# - [o] Check observation stack interval
+#   - 24 Hz 로 이미지 촬영; 4 프레임 크기의 buffer를 새로운 프레임으로 업데이트
+#   - aggregate_phy_steps=10 을 하면 freq=240Hz에서 알아서 매 observation 마다 RL-action 을 할 기회를 줌 (빠른 simulation)
+# - [ ] Replace the reward function with Pawel's
+# - [ ] Check done condition
+# - [ ] Check the curricula
+# - [ ] Implement the curriculum learning
+# - [ ] Randomize landing pad direction (yaw)
+# - [ ] Randomize drone initial position and orientation
+#   - [ ] LOS check (vision 범위에서 시작해야함)
+# - [ ] Laters:
+#   - [ ] Randomize landing pad texture
+#   - [ ] Check getDroneImage method (rotation wise...)
 # (2) _getDroneImages 메서드 제대로 된건지 확인 하기 (fov 등은 잘 되는데)
-# (3) _computeReward* 더 클린 하게 바꾸기 (읽기 좋게좀...; modularize for curriculum learning)
 # (4) _computeDone 체크 하기! contact 를 체크 해서 curriculum learning 에 통합 해야함.
-# (5) _checkLOS 만들기
-# (5) observation stack 의 간격을 체크할 것
-# (6) Randomizations
-#   (6-1) 착륙 패드 방향 랜덤화(yaw 로 구현 되어 있으나 확인 해 봐야함.)
-#   (6-2) 착륙 패드 texture 랜덤화
-#   (6-3) 드론 초기 위치 랜덤화 (반드시 vision 범위 내에서 시작할 것)
 import os
 import numpy as np
 import pybullet as p
-import pybullet_data
 from gym import spaces
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import BaseSingleAgentAviary, ObservationType, ActionType
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
@@ -63,7 +68,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  ):
         assert include_drone_state, "Currently, include_drone_state == False is not supported."
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
-        self.assets_path = "./gym_pybullet_drones/assets"  # assumes pwd=='ur_project_dir/gym-pybullet-drones/'
+        this_dir = os.path.dirname(os.path.realpath(__file__))
+        self.assets_path = os.path.join(this_dir, "../../assets")
+        # self.assets_path = "./gym_pybullet_drones/assets"  # assumes pwd=='ur_project_dir/gym-pybullet-drones/'
         self.fov = fov
         self.channel_first = channel_first
 
@@ -74,6 +81,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
         self.pad_link_center_idx = None
         self._resetLandingPad()
+        initial_xyzs, initial_rpys = self._reset_drone(initial_xyzs, initial_rpys)
 
         # 상위 클래스 초기화: 이 호출 이후에 self.IMG_RES 등 필요한 속성이 생성됨
         super().__init__(drone_model=drone_model,
@@ -106,11 +114,13 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
 
     def _reset_drone(self, initial_xyzs=None, initial_rpys=None):
+        # TODO: randomize initial_xyzs and initial_rpys
+        # TODO: use landing pad position to give los in the initial observation
         if initial_xyzs is None:
-            initial_xyzs = np.array([0.0, 0.0, 1.0])
+            initial_xyzs = np.array([[0.0, 0.0, 1.0]])
 
         if initial_rpys is None:
-            initial_rpys = np.array([0.0, 0.0, 0.0])
+            initial_rpys = np.array([[0.0, 0.0, 0.0]])
 
         return initial_xyzs, initial_rpys
 
@@ -153,7 +163,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         pad_start_orientation_euler = [0,0, yaw]
         pad_start_orientation_quaternion = p.getQuaternionFromEuler(pad_start_orientation_euler)
 
-        print("PyBullet is searching in:", os.getcwd())  # Check current directory
+        # print("PyBullet is searching in:", os.getcwd())  # Check current directory
         self.pad_link_center_idx = 8
         self.landing_pad_id = p.loadURDF(fileName=pad_urdf,
                                          basePosition=self.landing_pad_base_pos,
@@ -203,7 +213,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # rot_mat = np.array(p.getMatrixFromQuaternion(self.quat[nth_drone, :])).reshape(3, 3)
 
         # 카메라 위치: 드론 중심에서 필요에 따라 약간 아래로 배치 (예: [0, 0, 0.0] 또는 [-0.1] 등)
-        cameraEye = self.pos[nth_drone, :] + np.array([0, 0, 0.0])
+        # Do figure out the best position for the camera for your application
+        cameraEye = self.pos[nth_drone, :] + np.array([0, 0, 0.087])
 
         # 카메라 목표: 드론의 위치에서 충분히 아래쪽(예: 1000m 아래)로 설정
         target = self.pos[nth_drone, :] + np.array([0, 0, -1000])
@@ -313,8 +324,6 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 착륙 성공 (수평거리 < 0.2m, 고도 차 < 0.2m, 수평 속도 < 0.1m/s) 시 큰 보너스 지급
           - 드론이 너무 낮은 상태에서 패드와 멀어졌다면(크래시) 추가 패널티
         """
-        # TODO: modularize this reward function
-        #       and allow to have custom combinations via config(dict) for curriculum learning
         drone_pos = np.array(self.pos[0])
         pad_pos = np.array(self.landing_pad_base_pos)
         horizontal_distance = np.linalg.norm(drone_pos[:2] - pad_pos[:2])

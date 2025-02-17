@@ -3,6 +3,7 @@ import numpy as np
 from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
+import numpy as np
 import cv2
 import matplotlib.pyplot as plt
 
@@ -12,19 +13,21 @@ env = VisionLandingAviary(
     gui=False,           # PyBullet GUI 창이 뜨므로 시각적으로 확인 가능
     obs=ObservationType.BW,
     act=ActionType.VEL,
-    episode_len_sec=1.0,
+    aggregate_phy_steps=10,
+    img_res= np.array([500, 500]),
+    episode_len_sec=2.0,
     stack_size=4,
     record=True,
     # record=False,
-    initial_xyzs=np.array([[0.0, 0.0, 0.55]], dtype=np.float64),
-    fov=108.0,
+    initial_xyzs=np.array([[0.0, 0.0, 0.]], dtype=np.float64),
+    fov=90,
 )
 
 obs = env.reset()
 done = False
 while not done:
     # action = env.action_space.sample()  # 임의의 액션 (학습 시에는 정책의 출력 사용)
-    action = np.array([0.0, 0.0, -1.0, 0.8], dtype=np.float32)
+    action = np.array([0.5, 0.5, 0.05, 0.2], dtype=np.float32)
     obs, reward, done, info = env.step(action)
     # env.render()는 텍스트 출력이지만, GUI 창으로 시각적으로 확인 가능
     env.render()
