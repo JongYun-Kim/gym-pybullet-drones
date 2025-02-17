@@ -17,9 +17,9 @@ env = VisionLandingAviary(
     img_res= np.array([500, 500]),
     episode_len_sec=2.0,
     stack_size=4,
-    record=True,
-    # record=False,
-    initial_xyzs=np.array([[0.0, 0.0, 0.]], dtype=np.float64),
+    # record=True,
+    record=False,
+    initial_xyzs=np.array([[0.0, 0.0, 1.0]], dtype=np.float64),
     fov=90,
 )
 
@@ -27,7 +27,9 @@ obs = env.reset()
 done = False
 while not done:
     # action = env.action_space.sample()  # 임의의 액션 (학습 시에는 정책의 출력 사용)
-    action = np.array([0.5, 0.5, 0.05, 0.2], dtype=np.float32)
+    # action = np.array([0.5, 0.5, 0.05, 0.2], dtype=np.float32)
+    # action = np.array([0.0, 0.0, -1.0, 0.3], dtype=np.float32)
+    action = np.array([1.0, 0.0, 0.1, 0.3], dtype=np.float32)
     obs, reward, done, info = env.step(action)
     # env.render()는 텍스트 출력이지만, GUI 창으로 시각적으로 확인 가능
     env.render()

@@ -125,8 +125,11 @@ class BaseSingleAgentAviary(BaseAviary):
         if act == ActionType.VEL:
             # # From v1.0.0
             # self.SPEED_LIMIT = 0.03 * self.MAX_SPEED_KMH * (1000/3600)
-            # From 'autolanding' branch: this is the branch Pawel initially asked me to work on
-            self.SPEED_LIMIT = np.array([0.75 * self.MAX_SPEED_KMH * (1000/3600), 0.75 * self.MAX_SPEED_KMH * (1000/3600), 0.12 * self.MAX_SPEED_KMH * (1000/3600)])
+            # My version
+            ## (3, 3, 1) m/s
+            self.SPEED_LIMIT = np.array([0.36 * self.MAX_SPEED_KMH * (1000/3600), 0.36 * self.MAX_SPEED_KMH * (1000/3600), 0.12 * self.MAX_SPEED_KMH * (1000/3600)])
+            # # From 'autolanding' branch: this is the branch Pawel initially asked me to work on
+            # self.SPEED_LIMIT = np.array([0.75 * self.MAX_SPEED_KMH * (1000/3600), 0.75 * self.MAX_SPEED_KMH * (1000/3600), 0.12 * self.MAX_SPEED_KMH * (1000/3600)])
             # # From 'autolanding_paper' branch
             # self.SPEED_LIMIT = np.array([0.35 * self.MAX_SPEED_KMH * (1000/3600), 0.35 * self.MAX_SPEED_KMH * (1000/3600), 0.12 * self.MAX_SPEED_KMH * (1000/3600)])
             # # From Shubham's zip file
