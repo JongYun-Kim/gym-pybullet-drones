@@ -59,7 +59,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  img_res: np.ndarray = np.array([84, 84]),  # original: np.array([64, 48])
                  img_fps: int = 24,
                  episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
+                 include_drone_state: bool = True,
                  ):
+        assert include_drone_state, "Currently, include_drone_state == False is not supported."
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
         self.assets_path = "./gym_pybullet_drones/assets"  # assumes pwd=='ur_project_dir/gym-pybullet-drones/'
         self.fov = fov
@@ -102,6 +104,15 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # 버퍼를 채워 넣음 (원하는 경우 dummy_frame.copy() 사용)
         self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
+
+    def _reset_drone(self, initial_xyzs=None, initial_rpys=None):
+        if initial_xyzs is None:
+            initial_xyzs = np.array([0.0, 0.0, 1.0])
+
+        if initial_rpys is None:
+            initial_rpys = np.array([0.0, 0.0, 0.0])
+
+        return initial_xyzs, initial_rpys
 
     def _resetLandingPad(self):
         """
@@ -181,17 +192,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self._resetLandingPad()
         self._updateLandingPad()
 
-        # 카메라에서 RGB 이미지를 받아 알파 채널 포함됨 (shape: [H, W, 4])
-        rgb, _, _ = self._getDroneImages(0, segmentation=False)
-
-        # onboard 이미지 저장 (record=True이면)
-        if self.RECORD and (self.step_counter % self.IMG_CAPTURE_FREQ == 0):
-            self._exportImage(img_type=ImageType.BW if self.use_gray_scale else ImageType.RGB,
-                              img_input=rgb,
-                              path=self.ONBOARD_IMG_PATH,
-                              frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
-
-        return self._get_stacked_obs(rgb)
+        return obs
 
     def _getDroneImages(self, nth_drone, segmentation: bool=True):
         if self.IMG_RES is None:
@@ -280,12 +281,13 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
 
-        return self._get_stacked_obs(rgb)
+        return {"images": self._get_stacked_obs(rgb), "drone_state": self._getDroneStateVector(nth_drone=0)}
+        # return self._get_stacked_obs(rgb)
 
     def _observationSpace(self):
         """
         Observation space 재정의:
-          - 각 카메라 프레임의 크기는 IMG_RES (예: [64, 48])
+          - 각 카메라 프레임의 크기는 IMG_RES (예: [84, 84])
           - RGB 이미지이면 한 프레임당 채널 수는 3, 그레이스케일이면 1
           - stack_size 프레임을 쌓으므로 최종 shape는:
                 * channel_first=True → (channels*stack_size, height, width)
@@ -300,7 +302,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         else:
             shape = (height, width, channels * self.stack_size)
 
-        return spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
+        return spaces.Dict({"images": spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8),
+                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=(20,), dtype=np.float32)})
+        # return spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
 
     def _computeReward(self):
         """

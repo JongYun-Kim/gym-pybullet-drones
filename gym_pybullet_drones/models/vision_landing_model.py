@@ -196,6 +196,9 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
 
         obs_dict = input_dict["obs"]
         stacked_images = obs_dict["images"]  # shape: (batch_size, 4, 84, 84)
+        if self.cfg.ru_debugging:
+            assert stacked_images.dtype == torch.float64, f"stacked_images.dtype: {stacked_images.dtype}"
+        stacked_images /= 255.0  # Normalize the images
         drone_state = obs_dict["drone_state"]  # shape: (batch_size, 21)
 
         # (1) Encoder forward
@@ -209,7 +212,7 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         x = self.embedding(x)                              # (batch_size, embed_dim)
 
         # (3) Policy (actor) forward
-        logits = self.policy(x)                            # (batch_size, 4)
+        logits = self.policy(x)                            # (batch_size, 8)
 
         # (4) Value (critic) forward
         self._value_out = self.critic(x)             # (batch_size, 1)
