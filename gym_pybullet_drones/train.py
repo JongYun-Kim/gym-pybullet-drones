@@ -23,7 +23,7 @@ class CurriculumCallbacks(DefaultCallbacks):
         episode_total = result["episodes_total"]
         episode_this_iter = result["episodes_this_iter"]
         episode_reward_mean = result["episode_reward_mean"]
-        total_timesteps = result["total_timesteps"]
+        total_timesteps = result["timesteps_total"]
 
         # Difficulty Logic
         # if total_timesteps < 1000:
@@ -34,7 +34,7 @@ class CurriculumCallbacks(DefaultCallbacks):
         #     difficulty = 3
         # else:
         #     difficulty = 4
-        if episode_total < 200:
+        if episode_total < 10:
             difficulty = 1
         elif episode_total < 400:
             difficulty = 2
@@ -79,7 +79,7 @@ if __name__ == "__main__":
         "img_fps": 24,
         "episode_len_sec": 5.0,  # 에피소드 길이 (초)
         "include_drone_state": True,
-        "difficulty": 4,
+        "difficulty": 1,
     }
     env_name = "vision_landing_aviary_env"
     register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
@@ -99,6 +99,7 @@ if __name__ == "__main__":
     # train
     tune.run(
         "PPO",
+        # name="0218_toddler_init",
         name="test_curri_del_me_0218",
         # resume=True,
         # stop={"episode_reward_mean": -101},
@@ -112,7 +113,7 @@ if __name__ == "__main__":
             "env_config": env_config,
             "framework": "torch",
             #
-            # "callbacks": CurriculumCallbacks,
+            "callbacks": CurriculumCallbacks,
             #
             "model": {
                 "custom_model": model_name,
@@ -123,8 +124,8 @@ if __name__ == "__main__":
             "num_workers": 2,
             "num_envs_per_worker": 1,
             "rollout_fragment_length": 120,
-            "train_batch_size": 8*120,
-            "sgd_minibatch_size": 128,
+            "train_batch_size": 240,
+            "sgd_minibatch_size": 32,
             "num_sgd_iter": 8,
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
@@ -137,7 +138,7 @@ if __name__ == "__main__":
             # In the...
             "use_critic": True,
             "use_gae": True,
-            "gamma": 0.992,
+            "gamma": 0.991,
             "lambda": 0.96,
             "kl_coeff": 0,  # no PPO penalty term; we use PPO-clip anyway; if none zero, be careful Nan in tensors!
             # "entropy_coeff": tune.grid_search([0, 0.001, 0.0025, 0.01]),

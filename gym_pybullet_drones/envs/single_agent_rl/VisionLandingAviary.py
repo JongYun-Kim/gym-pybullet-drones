@@ -34,8 +34,8 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
 # - [o] Check the curricula
 # - [o] Implement the curriculum learning
 # - [o] Update action space
-# - [ ] Randomize landing pad direction (yaw)
-# - [ ] Randomize drone initial position and orientation
+# - [o] Randomize landing pad direction (yaw)
+# - [o] Randomize drone initial position and orientation
 #   - [ ] LOS check (vision 범위에서 시작해야함)
 # - [ ] Laters:
 #   - [ ] Make a configuration for the desired z velocity: @ the def of 'self.SPEED_LIMIT' in BaseSingleAgentAviary
@@ -129,31 +129,62 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
 
     def _reset_drone(self, initial_xyzs=None, initial_rpys=None):
-        # TODO: randomize initial_xyzs and initial_rpys
-        # TODO: use landing pad position to give los in the initial observation
-        if initial_xyzs is None:
-            initial_xyzs = np.array([[0.0, 0.0, 1.0]])
+        """
+        드론 초기화:
+          - 드론 높이는 약 10.0으로 설정
+          - 착륙 패드의 위치(self.landing_pad_base_start_pos)를 기준으로
+            반경 3.0m 이내의 임의의 오프셋을 주어 LOS 확보
+          - 자세: roll, pitch는 ±15° 범위, yaw는 완전 임의
+        """
+        # _resetLandingPad()가 먼저 호출되어 pad의 위치가 초기화되어 있다고 가정
+        pad_xy = self.landing_pad_base_start_pos[:2]  # 패드의 x, y 좌표
 
-        if initial_rpys is None:
-            initial_rpys = np.array([[0.0, 0.0, 0.0]])
+        # 패드 위치를 기준으로 반경 3.0m 이내의 랜덤 오프셋 생성
+        r = np.random.uniform(0, 3.0)
+        theta = np.random.uniform(0, 2*np.pi)
+        offset_x = r * np.cos(theta)
+        offset_y = r * np.sin(theta)
+        drone_x = pad_xy[0] + offset_x
+        drone_y = pad_xy[1] + offset_y
+        drone_z = 10.0  # 고도 10.0 근처
+
+        initial_xyzs = np.array([[drone_x, drone_y, drone_z]])
+
+        # roll, pitch: ±15° 범위, yaw: [-pi, pi] 범위
+        roll = np.deg2rad(np.random.uniform(-15, 15))
+        pitch = np.deg2rad(np.random.uniform(-15, 15))
+        yaw = np.random.uniform(-np.pi, np.pi)
+        initial_rpys = np.array([[roll, pitch, yaw]])
 
         return initial_xyzs, initial_rpys
 
     def _resetLandingPad(self):
         """
-        착륙 패드 관련 파라미터 초기화:
-            - 초기 위치: [x, y, z] (높이는 약간 올려서 충돌 판정을 피할 수도 있음)
-            - 이동 반경 및 속도: 원형 궤적으로 움직이도록 설정
+        착륙 패드 초기화:
+          - 패드의 x, y는 (0,0) 근처 임의로 생성 (예: [-1,1] 범위)
+          - z는 0.0 고정
+          - 패드의 roll, pitch는 0, yaw는 임의 생성
+          - 패드의 초기 속도(speed)는 0.5 ~ 2.0 범위에서 임의 생성 (에피소드 동안 일정)
         """
-        self.landing_pad_base_start_pos = np.array([0.0, 0.0, 0.0])
-        self.landing_pad_amplitude = 1.0   # 원의 반지름 (미터)
-        self.landing_pad_omega = 0.2       # 각속도 (rad/s)
+        # 패드의 위치: x, y는 [-1, 1] 범위, z=0.0
+        pad_x = np.random.uniform(-1.0, 1.0)
+        pad_y = np.random.uniform(-1.0, 1.0)
+        pad_z = 0.0
+        self.landing_pad_base_start_pos = np.array([pad_x, pad_y, pad_z])
         self.landing_pad_base_pos = self.landing_pad_base_start_pos.tolist()
+
+        # 패드의 자세: roll, pitch = 0, yaw는 임의
+        pad_yaw = np.random.uniform(-np.pi, np.pi)
+        self.landing_pad_yaw = pad_yaw  # 이후 업데이트에서 사용
+        self.landing_pad_orientation = p.getQuaternionFromEuler([0, 0, pad_yaw])
+
+        # 패드의 속도: 0.5 ~ 2.0 m/s 범위에서 임의 생성
+        self.landing_pad_speed = np.random.uniform(0.5, 2.0)
 
     def _addObstacles(self):
         """
         BaseAviary의 _addObstacles()를 오버라이드하여,
-        움직이는 착륙 패드만 환경에 추가한다.
+        움직이는 착륙 패드만 환경에 추가.
         여기서는 착륙 패드를 'parsed_pad.urdf' 파일을 가져옴. 내부에는 base1.obj를 참고하고, 그 내부에는 base1.mtl을 참고하며,
         그 내부에는 입힐 texture를 image 파일을 지정함. 모두 self.assets_path 내에 있어야 함. 복작복작복잡하네.
         Total Joints: 9 (car)
@@ -169,34 +200,28 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         Helipad: visual shape: (0.675, 0.675, 0), collision shape: (0.5, 0.5, 0)
         """
-        pad_urdf = self.assets_path + "/parsed_pad.urdf"
-        yaw = np.random.uniform(-np.pi/12.0, np.pi/12.0)
-        pad_start_orientation_euler = [0,0, yaw]
-        pad_start_orientation_quaternion = p.getQuaternionFromEuler(pad_start_orientation_euler)
-
+        pad_urdf = os.path.join(self.assets_path, "parsed_pad.urdf")
         # print("PyBullet is searching in:", os.getcwd())  # Check current directory
         self.pad_link_center_idx = 8
         self.landing_pad_id = p.loadURDF(fileName=pad_urdf,
                                          basePosition=self.landing_pad_base_pos,
-                                         baseOrientation=pad_start_orientation_quaternion,
+                                         baseOrientation=self.landing_pad_orientation,
                                          physicsClientId=self.CLIENT)
 
     def _updateLandingPad(self):
         """
-        매 스텝마다 착륙 패드의 위치를 원형 궤적으로 업데이트함.
-        (시간 t에 따라 x = x0 + A*cos(omega*t), y = y0 + A*sin(omega*t))
-        그리고 p.resetBasePositionAndOrientation()를 통해 패드의 위치를 갱신함.
+        매 스텝마다 패드의 위치를 업데이트:
+          - 패드가 초기화된 yaw 방향(heading)으로 일정 속도(self.landing_pad_speed)로 직진.
         """
-        t = self.step_counter * self.TIMESTEP
-        # x = self.landing_pad_base_start_pos[0] + self.landing_pad_amplitude * np.cos(self.landing_pad_omega * t)
-        x = self.landing_pad_base_start_pos[0]
-        # y = self.landing_pad_base_start_pos[1] + self.landing_pad_amplitude * np.sin(self.landing_pad_omega * t)
-        y = self.landing_pad_base_start_pos[1]
-        z = self.landing_pad_base_start_pos[2]
-        self.landing_pad_base_pos = [x, y, z]
+        dt = self.TIMESTEP  # 한 스텝의 시간 간격
+        dx = self.landing_pad_speed * dt * np.cos(self.landing_pad_yaw)
+        dy = self.landing_pad_speed * dt * np.sin(self.landing_pad_yaw)
+        self.landing_pad_base_pos[0] += dx
+        self.landing_pad_base_pos[1] += dy
+        # z는 0.0으로 고정
         p.resetBasePositionAndOrientation(self.landing_pad_id,
                                           self.landing_pad_base_pos,
-                                          p.getQuaternionFromEuler([0, 0, 0]),
+                                          self.landing_pad_orientation,
                                           physicsClientId=self.CLIENT)
 
     def _get_pad_center_position(self):
@@ -216,17 +241,24 @@ class VisionLandingAviary(BaseSingleAgentAviary):
     def reset(self):
         """
         환경 리셋:
-          - 상위 환경(super) reset 호출
+          - 드론 초기 위치와 자세를 _reset_drone()을 통해 랜덤으로 재설정
           - 착륙 패드 초기화 및 위치 업데이트
+          - 상위 환경(super) reset 호출
           - 카메라 이미지(초기 프레임)를 받아서 프레임 버퍼를 stack_size만큼 채움
           - stacked observation 반환
         """
         self.last_action_vel = np.zeros(3)  # 마지막으로 적용된 속도 명령
 
+        # 드론 초기 위치/자세를 랜덤으로 재설정
+        initial_xyzs, initial_rpys = self._reset_drone()
+        self.INIT_XYZS = initial_xyzs
+        self.INIT_RPYS = initial_rpys
+
         # 착륙 패드 리셋 및 초기 업데이트
         self._resetLandingPad()
         self._updateLandingPad()
 
+        # 상위 환경(super)의 reset() 호출 (여기서 p.resetSimulation() 등이 실행됨)
         obs = super().reset()
 
         return obs
