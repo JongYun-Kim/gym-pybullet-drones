@@ -447,6 +447,108 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             combined_reward = -0.01
         return combined_reward
 
+    def _compute_horizontal_dist_reward(self):
+        # Get relative xy distance b/w the drone and the helipad
+        rel_xy_dist = np.linalg.norm(self.pos[0, 0:2] - self._get_pad_center_position()[0:2])
+
+        # Compute reward
+        rel_xy_thresh = 10.0
+        rho = 30.0
+        normalized_rel_xy_dist = (rel_xy_thresh - rel_xy_dist) / rel_xy_thresh
+        if normalized_rel_xy_dist > 0:  # within the threshold
+            return (rho ** normalized_rel_xy_dist - 1) / (rho - 1)  # in [0, 1]
+        else:  # beyond the threshold
+            return 0.0
+
+    def _compute_vertical_velocity_reward(self):
+        alpha = 30.0
+        desired_z_vel = -0.5
+        assert abs(desired_z_vel) < self.SPEED_LIMIT[2], "Desired z velocity should be within the speed limit."
+
+        drone_z_vel = self.vel[0, 2]  # z velocity
+
+        # 너무 빠르게 움직이는 경우
+        if abs(drone_z_vel) / self.SPEED_LIMIT[2] > 1.1:
+            return 0.0
+        # 상승 하는 경우
+        if drone_z_vel > 0:
+            return -0.1
+        # 안전하게 하강하는 경우
+        if desired_z_vel < drone_z_vel <= 0:
+            return (alpha ** (drone_z_vel / desired_z_vel) - 1) / (alpha - 1)
+        # 다소 빠르게 하강하는 경우
+        elif drone_z_vel <= desired_z_vel:
+            return -0.01
+        else:
+            raise "VisionLandingAviary env._compute_vertical_velocity_reward(): This should not happen!"
+
+    def _compute_reward_landing_or_crashing(self):
+        drone_id = self.DRONE_IDS[0]
+        drone_altitude = self.pos[0, 2]
+
+        if drone_altitude >= self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
+            print('    VisionLandingAviary env: Landed!')
+            return 100.0
+        elif drone_altitude < self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
+            print('    VisionLandingAviary env: Crashed!')
+            return -1.0
+        else:
+            return 0.0
+
+    def _compute_reward_visibility(self):
+        """Returns positive reward if LOS; otherwise, negative reward."""
+        pad_position = self._get_pad_center_position()  # numpy (3,)
+        if self._check_los(pad_position):
+            return 1.0
+        else:
+            print("    VisionLandingAviary env: Out of LOS!")
+            return -0.01
+
+    def _check_los(self, pad_position):
+        """
+        드론의 카메라 FOV 안에 pad_position(타겟)이 들어왔는지 여부를 True/False로 반환.
+        """
+        # 드론 위치, 쿼터니언 가져오기
+        drone_pos = self.pos[0, :]          # shape: (3,)
+        drone_quat = self.quat[0, :]        # shape: (4,) 가정: (x, y, z, w) 또는 (w, x, y, z)
+
+        # 월드 좌표계에서 타겟 벡터
+        target_vec_world = pad_position - drone_pos  # shape: (3,)
+
+        # 쿼터니언 → 회전행렬(또는 Rotation 객체)
+        # Scipy는 기본적으로 [x, y, z, w] 순서를 받음. (만약 [w, x, y, z]라면 순서 맞춰야 함)
+        rot_world_to_drone = Rotation.from_quat(drone_quat)
+
+        # 월드 → 드론 바디로 벡터 변환
+        target_vec_drone = rot_world_to_drone.inv().apply(target_vec_world)
+
+        # 드론 바디에서 카메라가 -Z 방향을 본다고 가정하므로,
+        # z가 음수이면 카메라가 바라보는 '앞쪽(아래쪽)'에 위치하게 됨
+        x_d = target_vec_drone[0]
+        y_d = target_vec_drone[1]
+        z_d = target_vec_drone[2]
+
+        # 카메라가 -Z쪽을 본다고 할 때, z_d가 양수라면 카메라의 "뒷면"에 있는 것
+        if z_d > 0:
+            return False
+
+        # FOV 체크
+        # 수평/수직 시야각이 self.fov로 동일하다고 할 때,
+        # x, y 각 축에 대해 시야각을 초과하는지 확인하면 됨.
+        # 각도 계산은 arctan2(수평방향, 종방향) 사용
+        # z축이 음수이므로 -z_d를 분모로 사용 (z_d가 음수이므로 -z_d는 양수)
+        half_fov = self.fov / 2.0
+
+        # arctan2의 결과에 abs()를 취해서 카메라 중앙축으로부터 떨어진 각도를 구함
+        angle_x = np.degrees(np.arctan2(abs(x_d), -z_d))  # 드론 바디 기준
+        angle_y = np.degrees(np.arctan2(abs(y_d), -z_d))
+
+        # x, y 방향 모두 fov/2 이내면 카메라 프레임 안에 있는 것
+        if (angle_x <= half_fov) and (angle_y <= half_fov):
+            return True
+        else:
+            return False
+
     def _computeDone(self):
         """
         종료 조건:

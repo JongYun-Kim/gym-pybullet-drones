@@ -49,7 +49,11 @@ if __name__ == "__main__":
 
     # Set up custom model configuration
     my_config_instance = VisionLanderPPOConfig()
-    custom_model_config = {"config_instance": my_config_instance}
+    my_config_instance.ru_debugging = True
+    custom_model_config = {
+        "config_instance": my_config_instance,
+        "config_in_dict": my_config_instance.to_dict(),
+    }
 
     # register your custom model
     model_name = "vision_lander_ppo"
