@@ -20,7 +20,7 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
     - Body ID: 2, Name: car    as self.landing_pad_id
     - Observation: 드론 카메라에서 촬영한 RGB 이미지(알파 채널 제외)를 4 프레임 stack
     - Action: ActionType.RPM or VEL
-    - Reward: Visibility + Safety (vertical vel) + Landing/Crashing
+    - Reward: Visibility + Safety (vertical vel) + Landing/Crashing + Horizontal distance
     - 기록: 환경 외부 카메라 기록(BaseAviary의 record 옵션) 외에도, onboard 카메라 이미지가 PNG로 저장되며, 후에 ffmpeg로 동영상 변환 가능.
 """
 # TODOs:
@@ -30,16 +30,16 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
 #   - aggregate_phy_steps=10 을 하면 freq=240Hz에서 알아서 매 observation 마다 RL-action 을 할 기회를 줌 (빠른 simulation)
 # - [o] Replace the reward function with Pawel's
 # - [o] Check done condition
-# - [ ] Check the curricula
-# - [ ] Implement the curriculum learning
+# - [o] drone state를 제대로 obs 넣어줘야 함! (현재는 world 좌표에서 인듯; linear vel, quat 넣으면 될 듯)
+# - [o] Check the curricula
+# - [o] Implement the curriculum learning
 # - [ ] Randomize landing pad direction (yaw)
 # - [ ] Randomize drone initial position and orientation
 #   - [ ] LOS check (vision 범위에서 시작해야함)
 # - [ ] Laters:
 #   - [ ] Make a configuration for the desired z velocity: @ the def of 'self.SPEED_LIMIT' in BaseSingleAgentAviary
 #   - [ ] Randomize landing pad texture
-#   - [>] Check getDroneImage method (rotation wise...)
-# (2) _getDroneImages 메서드 제대로 된건지 확인 하기 (fov 등은 잘 되는데)
+#   - [o] Check getDroneImage method (rotation wise...)
 # (4) _computeDone 체크 하기! contact 를 체크 해서 curriculum learning 에 통합 해야함.
 import os
 import numpy as np
@@ -72,7 +72,11 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  img_fps: int = 24,
                  episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
                  include_drone_state: bool = True,
+                 difficulty: int = 4,
                  ):
+        # Curriculum learning setting
+        self.difficulty = difficulty
+
         assert include_drone_state, "Currently, include_drone_state == False is not supported."
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
         this_file_dir = os.path.dirname(os.path.realpath(__file__))
@@ -310,7 +314,11 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
 
-        return {"images": self._get_stacked_obs(rgb), "drone_state": self._getDroneStateVector(nth_drone=0)}
+        # 드론 상태 정보 (linear vel, angular vel, orientation)를 추가하여 observation 반환
+        state = np.hstack([self.quat[0, :], self.vel[0, :], self.last_action[0, :]])
+        assert state.shape == (11,), f"Invalid drone_state shape in _computeObs: {state.shape}"
+
+        return {"images": self._get_stacked_obs(rgb), "drone_state": state}
         # return self._get_stacked_obs(rgb)
 
     def _observationSpace(self):
@@ -332,12 +340,75 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             shape = (height, width, channels * self.stack_size)
 
         return spaces.Dict({"images": spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8),
-                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=(20,), dtype=np.float32)})
+                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=(11,), dtype=np.float64)})
         # return spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
 
-    def _computeReward(self):
+    def _curriculum_v1_rewards(self):
+        """
+        커리큘럼 난이도에 따라 보상 함수를 다르게 구성합니다.
+         - Difficulty 1: visibility 보상만 사용
+         - Difficulty 2: visibility와 landing/crashing 보상 사용. 다만 landing/crashing 보상에서 음수는 0으로 처리
+         - Difficulty 3: visibility와 landing/crashing 보상 사용 (음수 보상 적용)
+         - Difficulty 4: vanilla reward (모든 보상 요소 사용)
+        """
+        if self.difficulty == 1:
+            # 오직 visibility 보상만 사용
+            return self._compute_reward_visibility()
 
-        return self._computeReward_backup_thanks_to_Pawel()
+        elif self.difficulty == 2:
+            # visibility + landing/crashing (음수 보상 무시)
+            r_vis = self._compute_reward_visibility()
+            if r_vis < 0:
+                return r_vis  # 시야가 확보되지 않은 경우는 그대로 음수 반환
+            # landing/crashing 에서 음수(패널티)는 0으로 처리 (no_crash_penalty=True)
+            r_land = self._compute_reward_landing_or_crashing(no_crash_penalty=True)
+            return r_vis + r_land
+
+        elif self.difficulty == 3:
+            # visibility + landing/crashing (음수 보상 적용)
+            r_vis = self._compute_reward_visibility()
+            if r_vis < 0:
+                return r_vis
+            r_land = self._compute_reward_landing_or_crashing(no_crash_penalty=False)
+            if r_land < 0:
+                return r_land
+            return r_vis + r_land
+
+        elif self.difficulty == 4:
+            # vanilla reward 함수: visibility, landing/crashing, vertical velocity, horizontal distance 모두 사용
+            return self._vanilla_reward_function()
+
+        else:
+            raise ValueError(f"Invalid curriculum difficulty: {self.difficulty}")
+
+
+    def _vanilla_reward_function(self):
+        # 1. Check visibility
+        reward_visibility = self._compute_reward_visibility()
+        if reward_visibility < 0:
+            return reward_visibility
+
+        # 2. Check Landing/Crashing
+        reward_landing_or_crashing = self._compute_reward_landing_or_crashing()
+        if reward_landing_or_crashing < 0:
+            return reward_landing_or_crashing
+
+        # 3. Compute vertical velocity reward (safety)
+        reward_vertical_velocity = self._compute_vertical_velocity_reward()
+        # 4. Compute horizontal distance reward
+        reward_horizontal_dist = self._compute_horizontal_dist_reward()
+
+        # 5. Combine rewards
+        reward = 0.6 * reward_horizontal_dist + 1.0 * reward_vertical_velocity
+        reward += reward_visibility + reward_landing_or_crashing
+        return reward
+
+    def set_difficulty(self, new_diff: int):
+        """This setter is provided to change the difficulty during the training."""
+        self.difficulty = new_diff
+
+    def _computeReward(self):
+        return self._curriculum_v1_rewards()
 
     def _compute_horizontal_dist_reward(self):
         # Get relative xy distance b/w the drone and the helipad
@@ -374,7 +445,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         else:
             raise "VisionLandingAviary env._compute_vertical_velocity_reward(): This should not happen!"
 
-    def _compute_reward_landing_or_crashing(self):
+    def _compute_reward_landing_or_crashing(self, no_crash_penalty=False):
         drone_id = self.DRONE_IDS[0]
         drone_altitude = self.pos[0, 2]
 
@@ -383,17 +454,20 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             return 100.0
         elif drone_altitude < self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
             print('    VisionLandingAviary env: Crashed!')
-            return -1.0
-        else:
+            if no_crash_penalty:
+                return 0.0
+            else:
+                return -1.0
+        else:  # Not landed or crashed
             return 0.0
 
     def _compute_reward_visibility(self):
         """Returns positive reward if LOS; otherwise, negative reward."""
         pad_position = self._get_pad_center_position()  # numpy (3,)
         if self._check_los(pad_position):
-            return 1.0
+            return 0.0
         else:
-            print("    VisionLandingAviary env: Out of LOS!")
+            print("    [VisionLandingAviary] env: Out of LOS!")
             return -0.01
 
     def _check_los(self, pad_position):
@@ -451,7 +525,6 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # Note: 땅과 충돌해도 끝남;;
         if p.getContactPoints(bodyA=1, physicsClientId=self.CLIENT) != ():
             return True
-
         # 에피소드 시간 초과
         if self.step_counter * self.TIMESTEP >= self.EPISODE_LEN_SEC:
             return True
@@ -464,9 +537,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 드론의 현재 위치, 착륙 패드의 위치, 두 대상 간의 수평 거리를 포함
         """
         info = {}
-        info['drone_pos'] = self.pos[0]
-        info['landing_pad_base_pos'] = self.landing_pad_base_pos
-        info['horizontal_distance'] = np.linalg.norm(np.array(self.pos[0][:2]) - np.array(self.landing_pad_base_pos[:2]))
+        # info['drone_pos'] = self.pos[0]
+        # info['landing_pad_base_pos'] = self.landing_pad_base_pos
+        # info['horizontal_distance'] = np.linalg.norm(np.array(self.pos[0][:2]) - np.array(self.landing_pad_base_pos[:2]))
         return info
 
     def step(self, action):
@@ -534,10 +607,13 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             combined_reward = -1
         else:
             combined_reward =  combined_reward
+
+        # (5) Visibility
         distance_x = np.abs(drone_position[0]-UGV_pos[0])
         distance_y = np.abs(drone_position[1]-UGV_pos[1])
         if np.abs(angle) > 30 and (distance_y > 0.8 and distance_x > 0.8):
             combined_reward = -0.01
+
         return combined_reward
 
     def _getDroneImages_org(self, nth_drone, segmentation: bool=True):

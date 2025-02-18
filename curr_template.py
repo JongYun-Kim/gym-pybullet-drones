@@ -23,12 +23,11 @@ def reward_fn_dense2(state, action, next_state):
     # 난이도 3에 해당
     return 2
 
-# Wrapping LunarLander-v2 with custom reward functions
+# Wrapping CartPole-v0 with custom reward functions
 class MultiRewardLander(gym.Env):
     def __init__(self, env_config):
         super().__init__()
         # 내부적으로 LunarLander 환경 사용
-        # self._base_env = gym.make("LunarLander-v2")
         self._base_env = gym.make("CartPole-v0")
 
         # 보상함수 set: env_config에 담을 수도 있고, 여기서 직접 관리해도 됨

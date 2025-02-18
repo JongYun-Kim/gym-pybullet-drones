@@ -1,7 +1,9 @@
 import ray
 from ray import tune
+from ray.air.examples.pytorch.torch_fashion_mnist_example import training_data
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
+from ray.rllib.algorithms.callbacks import DefaultCallbacks
 
 from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary
 from gym_pybullet_drones.models.vision_landing_model import VisionLanderPPO, VisionLanderPPOConfig
@@ -10,19 +12,54 @@ from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
 import numpy as np
 
-
 # TODOs
 # - [ ] Add evaluation during training
+
+class CurriculumCallbacks(DefaultCallbacks):
+    def on_train_result(self, *, algorithm, result, **kwargs):
+        print("\n@@@ on_train_result starts in CurriculumCallbacks @@@\n")
+
+        # Useful metrics
+        training_iteration = result["training_iteration"]
+        episode_total = result["episodes_total"]
+        episode_this_iter = result["episodes_this_iter"]
+        episode_reward_mean = result["episode_reward_mean"]
+        total_timesteps = result["total_timesteps"]
+
+        # Difficulty Logic
+        # if total_timesteps < 1000:
+        #     difficulty = 1
+        # elif total_timesteps < 2000:
+        #     difficulty = 2
+        # elif total_timesteps < 3000:
+        #     difficulty = 3
+        # else:
+        #     difficulty = 4
+        if episode_total < 200:
+            difficulty = 1
+        elif episode_total < 400:
+            difficulty = 2
+        elif episode_total < 600:
+            difficulty = 3
+        else:
+            difficulty = 4
+
+        # Set difficulty
+        algorithm.workers.foreach_worker(
+            lambda w: w.foreach_env(lambda env: env.set_difficulty(difficulty))
+        )
+
+        # Add more in on_train_result
+
+    # End Callbacks
 
 
 if __name__ == "__main__":
 
     # do_debug = False
     do_debug = True
-
     if do_debug:
         ray.init(local_mode=True)
-
 
     # register your custom environment
     env_config = {
@@ -43,6 +80,7 @@ if __name__ == "__main__":
         "img_fps": 24,
         "episode_len_sec": 5.0,  # 에피소드 길이 (초)
         "include_drone_state": True,
+        "difficulty": 1,
     }
     env_name = "vision_landing_aviary_env"
     register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
@@ -62,11 +100,11 @@ if __name__ == "__main__":
     # train
     tune.run(
         "PPO",
-        name="test_run_deleteme_0217",
+        name="test_curri_del_me_0218",
         # resume=True,
         # stop={"episode_reward_mean": -101},
         # stop={"training_iteration": 300},
-        checkpoint_freq=1,
+        checkpoint_freq=0,
         keep_checkpoints_num=16,
         checkpoint_at_end=True,
         checkpoint_score_attr="episode_reward_mean",
@@ -75,7 +113,7 @@ if __name__ == "__main__":
             "env_config": env_config,
             "framework": "torch",
             #
-            # "callbacks": MyCallbacks,
+            "callbacks": CurriculumCallbacks,
             #
             "model": {
                 "custom_model": model_name,

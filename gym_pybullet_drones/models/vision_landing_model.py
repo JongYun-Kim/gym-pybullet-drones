@@ -139,9 +139,10 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         conv_out = self.encoder(test_input)
         self._conv_out_flattened_size = int(np.prod(conv_out.shape[1:]))  # C * H * W
         # remove this assertion once stable
-        assert self._conv_out_flattened_size == 32 * 35 * 35, (f"_conv_out_size is {self._conv_out_flattened_size}, "
-                                                               f"if you used non-default cfgs, please remove this line "
-                                                               f"or check the dim manually.")
+        if self.cfg.ru_debugging:
+            assert self._conv_out_flattened_size == 32 * 35 * 35, (f"_conv_out_size is {self._conv_out_flattened_size}, "
+                                                                   f"if you used non-default cfgs, please remove this line "
+                                                                   f"or check the dim manually.")
 
         # (2) Embedding layer
         #     - encoder out(Flatten) + drone_state -> Linear -> BN -> Tanh
