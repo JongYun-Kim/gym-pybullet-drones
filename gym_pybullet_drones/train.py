@@ -23,22 +23,22 @@ class CurriculumCallbacks(DefaultCallbacks):
         episode_total = result["episodes_total"]
         episode_this_iter = result["episodes_this_iter"]
         episode_reward_mean = result["episode_reward_mean"]
-        total_timesteps = result["timesteps_total"]
+        timesteps_total = result["timesteps_total"]
 
         # Difficulty Logic
-        # if total_timesteps < 1000:
+        # if timesteps_total < 1000:
         #     difficulty = 1
-        # elif total_timesteps < 2000:
+        # elif timesteps_total < 2000:
         #     difficulty = 2
-        # elif total_timesteps < 3000:
+        # elif timesteps_total < 3000:
         #     difficulty = 3
         # else:
         #     difficulty = 4
-        if episode_total < 10:
+        if episode_total < 800:
             difficulty = 1
-        elif episode_total < 400:
+        elif episode_total < 2000:
             difficulty = 2
-        elif episode_total < 600:
+        elif episode_total < 3600:
             difficulty = 3
         else:
             difficulty = 4
@@ -55,8 +55,8 @@ class CurriculumCallbacks(DefaultCallbacks):
 
 if __name__ == "__main__":
 
-    # do_debug = False
-    do_debug = True
+    do_debug = False
+    # do_debug = True
     if do_debug:
         ray.init(local_mode=True)
 
@@ -66,7 +66,7 @@ if __name__ == "__main__":
         "initial_xyzs": None,
         "initial_rpys": None,
         "physics": Physics.PYB,
-        "freq": 240,
+        "freq": 300,
         "aggregate_phy_steps": 10,
         "gui": False,
         "record": False,
@@ -74,10 +74,10 @@ if __name__ == "__main__":
         "act": ActionType.VEL,
         "channel_first": True,  # nn.Conv2d() 사용시 channel_first=True
         "stack_size": 4,  # 이미지 프레임 stack 개수
-        "fov": 60.0,  # drone 카메라 시야각 (degree)
+        "fov": 80.0,  # drone 카메라 시야각 (degree)
         "img_res": np.array([84, 84]),  # original: np.array([64, 48])
-        "img_fps": 24,
-        "episode_len_sec": 5.0,  # 에피소드 길이 (초)
+        "img_fps": 30,
+        "episode_len_sec": 30.0,  # 에피소드 길이 (초)
         "include_drone_state": True,
         "difficulty": 1,
     }
@@ -99,12 +99,11 @@ if __name__ == "__main__":
     # train
     tune.run(
         "PPO",
-        # name="0218_toddler_init",
-        name="test_curri_del_me_0218",
+        name="0218_toddler_init",
         # resume=True,
         # stop={"episode_reward_mean": -101},
         # stop={"training_iteration": 300},
-        checkpoint_freq=0,
+        checkpoint_freq=8,
         keep_checkpoints_num=16,
         checkpoint_at_end=True,
         checkpoint_score_attr="episode_reward_mean",
@@ -121,12 +120,12 @@ if __name__ == "__main__":
                 # "custom_action_dist": "det_cont_action_dist" if custom_model_config["use_deterministic_action_dist"] else None,
             },
             "num_gpus": 1,
-            "num_workers": 2,
+            "num_workers": 24,
             "num_envs_per_worker": 1,
-            "rollout_fragment_length": 120,
-            "train_batch_size": 240,
-            "sgd_minibatch_size": 32,
-            "num_sgd_iter": 8,
+            "rollout_fragment_length": 900,
+            "train_batch_size": 24*900,
+            "sgd_minibatch_size": 1024,
+            "num_sgd_iter": 20,
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
             "lr": 4e-5,
