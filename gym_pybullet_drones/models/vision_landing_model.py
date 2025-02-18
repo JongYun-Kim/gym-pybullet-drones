@@ -11,7 +11,7 @@ import numpy as np
 # custom modules
 # from yours
 
-
+import torch.distributions.distribution
 @dataclass
 class VisionLanderPPOConfig:
     ru_debugging: bool = False
@@ -220,6 +220,11 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
 
         # (4) Value (critic) forward
         self._value_out = self.critic(x)             # (batch_size, 1)
+
+        # (5) Check for NaN/Inf in the output
+        if self.cfg.ru_debugging:
+            if torch.isnan(logits).any() or torch.isinf(logits).any():
+                raise ValueError("logits에서 NaN 또는 Inf 발견!")
 
         return logits, state
 

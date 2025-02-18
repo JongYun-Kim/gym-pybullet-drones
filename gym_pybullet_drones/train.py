@@ -42,6 +42,7 @@ class CurriculumCallbacks(DefaultCallbacks):
             difficulty = 3
         else:
             difficulty = 4
+        print(f" @@@         current difficulty: {difficulty}              @@@\n")
 
         # Set difficulty
         algorithm.workers.foreach_worker(
