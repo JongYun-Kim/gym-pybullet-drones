@@ -3,6 +3,7 @@ from ray import tune
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+# from ray.rllib.models.torch.torch_action_dist import TorchSquashedGaussian
 
 from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary
 from gym_pybullet_drones.models.vision_landing_model import VisionLanderPPO, VisionLanderPPOConfig
@@ -56,8 +57,8 @@ class CurriculumCallbacks(DefaultCallbacks):
 
 if __name__ == "__main__":
 
-    # do_debug = False
-    do_debug = True
+    do_debug = False
+    # do_debug = True
     if do_debug:
         ray.init(local_mode=True)
 
@@ -98,6 +99,7 @@ if __name__ == "__main__":
     # register your custom model
     model_name = "vision_lander_ppo"
     ModelCatalog.register_custom_model(model_name, VisionLanderPPO)
+    # ModelCatalog.register_custom_action_dist("squashed_gaussian", TorchSquashedGaussian)
 
     # train
     tune.run(
@@ -120,9 +122,9 @@ if __name__ == "__main__":
             "model": {
                 "custom_model": model_name,
                 "custom_model_config": custom_model_config,
-                # "custom_action_dist": "det_cont_action_dist" if custom_model_config["use_deterministic_action_dist"] else None,
+                # "custom_action_dist": "squashed_gaussian",
             },
-            "num_gpus": 1,
+            "num_gpus": 3,
             "num_workers": 24,
             "num_envs_per_worker": 1,
             "rollout_fragment_length": 900,
