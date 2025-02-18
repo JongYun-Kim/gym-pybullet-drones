@@ -11,28 +11,34 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
         - Link Index: 3, Name: prop3_link,          Position: ( 0.02800,  -0.02780,   0.01349)
         - Link Index: 4, Name: center_of_mass_link, Position: (-3.300e-07, 2.831e-05, 0.0134901)
       - 평면에 착륙하면 z = 0.135 (base==self.pos)
+      - 패드 착륙
+        - 이론상: z = 0.2860 == 0.2725 + 0.0135 (heliport_base + drone_base_height)
+        - 실험서: z = 0.28754655
     - 헬리패드: 움직이는 착륙 패드 (simple car + helipad texture from parsed_pad.urdf in assets dir)
+    - Body ID: 0, Name: plane  as idk yet
+    - Body ID: 1, Name: cf2    as self.DRONE_IDS
+    - Body ID: 2, Name: car    as self.landing_pad_id
     - Observation: 드론 카메라에서 촬영한 RGB 이미지(알파 채널 제외)를 4 프레임 stack
     - Action: ActionType.RPM or VEL
-    - Reward: working on it...
-    - 기록: 환경 외부 카메라 기록(BaseAviary의 record 옵션) 외에도, onboard 카메라 이미지가 PNG로 저장되며,
-             후에 ffmpeg를 이용해 동영상으로 변환 가능.
+    - Reward: Visibility + Safety (vertical vel) + Landing/Crashing
+    - 기록: 환경 외부 카메라 기록(BaseAviary의 record 옵션) 외에도, onboard 카메라 이미지가 PNG로 저장되며, 후에 ffmpeg로 동영상 변환 가능.
 """
 # TODOs:
 # - [o] rgb to grey scale
 # - [o] Check observation stack interval
 #   - 24 Hz 로 이미지 촬영; 4 프레임 크기의 buffer를 새로운 프레임으로 업데이트
 #   - aggregate_phy_steps=10 을 하면 freq=240Hz에서 알아서 매 observation 마다 RL-action 을 할 기회를 줌 (빠른 simulation)
-# - [ ] Replace the reward function with Pawel's
-# - [ ] Check done condition
+# - [o] Replace the reward function with Pawel's
+# - [o] Check done condition
 # - [ ] Check the curricula
 # - [ ] Implement the curriculum learning
 # - [ ] Randomize landing pad direction (yaw)
 # - [ ] Randomize drone initial position and orientation
 #   - [ ] LOS check (vision 범위에서 시작해야함)
 # - [ ] Laters:
+#   - [ ] Make a configuration for the desired z velocity: @ the def of 'self.SPEED_LIMIT' in BaseSingleAgentAviary
 #   - [ ] Randomize landing pad texture
-#   - [ ] Check getDroneImage method (rotation wise...)
+#   - [>] Check getDroneImage method (rotation wise...)
 # (2) _getDroneImages 메서드 제대로 된건지 확인 하기 (fov 등은 잘 되는데)
 # (4) _computeDone 체크 하기! contact 를 체크 해서 curriculum learning 에 통합 해야함.
 import os
@@ -44,6 +50,7 @@ from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.BaseAviary import ImageType  # onboard 이미지 저장에 사용
 from gym_pybullet_drones.utils.utils import rgb2gray
 import subprocess
+from scipy.spatial.transform import Rotation
 
 
 class VisionLandingAviary(BaseSingleAgentAviary):
@@ -68,9 +75,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  ):
         assert include_drone_state, "Currently, include_drone_state == False is not supported."
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
-        this_dir = os.path.dirname(os.path.realpath(__file__))
-        self.assets_path = os.path.join(this_dir, "../../assets")
-        # self.assets_path = "./gym_pybullet_drones/assets"  # assumes pwd=='ur_project_dir/gym-pybullet-drones/'
+        this_file_dir = os.path.dirname(os.path.realpath(__file__))
+        self.assets_path = os.path.join(this_file_dir, "../../assets")
         self.fov = fov
         self.channel_first = channel_first
 
@@ -78,9 +84,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.use_gray_scale = True if obs == ObservationType.BW else False
         obs = ObservationType.RGB if obs == ObservationType.BW else obs
 
-        # 착륙 패드 관련 파라미터 초기화 (IMG_RES와 무관하므로 먼저 호출 가능)
+        # 착륙 패드 관련 파라미터 초기화 (IMG_RES 와 무관 하므로 먼저 호출 가능)
         self.pad_link_center_idx = None
         self._resetLandingPad()
+        self.pad_height = 0.2725  # 착륙 패드 높이 (착륙후 drone pos 는 이거 보다 높음)
         initial_xyzs, initial_rpys = self._reset_drone(initial_xyzs, initial_rpys)
 
         # 상위 클래스 초기화: 이 호출 이후에 self.IMG_RES 등 필요한 속성이 생성됨
@@ -139,14 +146,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         """
         BaseAviary의 _addObstacles()를 오버라이드하여,
         움직이는 착륙 패드만 환경에 추가한다.
-        여기서는 pybullet_data 내의 cube.urdf를 사용하며, globalScaling을 조절하여 착륙 패드 크기를 설정함.
-        여기서는 착륙 패드를 'parsed_pad.urdf' 파일을 가져옴.
-        내부에는 base1.obj를 참고하고
-        그 내부에는 base1.mtl을 참고하며
+        여기서는 착륙 패드를 'parsed_pad.urdf' 파일을 가져옴. 내부에는 base1.obj를 참고하고, 그 내부에는 base1.mtl을 참고하며,
         그 내부에는 입힐 texture를 image 파일을 지정함. 모두 self.assets_path 내에 있어야 함. 복작복작복잡하네.
-        - Body ID: 0, Name: plane  as idk yet
-        - Body ID: 1, Name: cf2    as self.DRONE_IDS
-        - Body ID: 2, Name: car    as self.landing_pad_id
         Total Joints: 9 (car)
         Link Index: 0, Name: main_body,              Position: (1.0, 0.0, 0.16)
         Link Index: 1, Name: rear_bar_link,          Position: (0.84, 0, 0.06)
@@ -157,6 +158,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         Link Index: 6, Name: front_right_wheel_link, Position: (1.16, 0.1, 0.06)
         Link Index: 7, Name: holder,                 Position: (1.0, 0.0, 0.235)
         Link Index: 8, Name: heliport_base,          Position: (1.0, 0.0, 0.2725)
+
+        Helipad: visual shape: (0.675, 0.675, 0), collision shape: (0.5, 0.5, 0)
         """
         pad_urdf = self.assets_path + "/parsed_pad.urdf"
         yaw = np.random.uniform(-np.pi/12.0, np.pi/12.0)
@@ -204,7 +207,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         return obs
 
-    def _getDroneImages(self, nth_drone, segmentation: bool=True):
+    def _getDroneImages_org(self, nth_drone, segmentation: bool=True):
         if self.IMG_RES is None:
             print("[ERROR] in VisionLandingAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
             exit()
@@ -251,6 +254,53 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         seg = np.reshape(seg, (h, w))
         return rgb, dep, seg
 
+    def _getDroneImages(self, nth_drone, segmentation: bool=True):
+        if self.IMG_RES is None:
+            print("[ERROR] in VisionLandingAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
+            exit()
+
+        # 1) 드론 오리엔테이션(쿼터니언) → 회전행렬
+        quat_drone = self.quat[nth_drone, :]
+        rot_mat = np.array(p.getMatrixFromQuaternion(quat_drone)).reshape((3,3))
+
+        # 2) 드론에서의 카메라 offset, 보고싶은 방향, up 벡터
+        camera_offset = np.array([0., 0., 0.087])        # 드론 중심 대비 카메라 위치
+        camera_target_offset = np.array([0., 0., -1.]) # 아래 방향을 보고 싶다면 -z
+        camera_up_in_drone_frame = np.array([0., 1., 0.])
+
+        # 3) 월드좌표계로 변환
+        cameraEye = self.pos[nth_drone] + rot_mat.dot(camera_offset)
+        target    = self.pos[nth_drone] + rot_mat.dot(camera_target_offset)
+        upVector  = rot_mat.dot(camera_up_in_drone_frame)
+
+        DRONE_CAM_VIEW = p.computeViewMatrix(
+            cameraEyePosition=cameraEye,
+            cameraTargetPosition=target,
+            cameraUpVector=upVector,
+            physicsClientId=self.CLIENT
+        )
+
+        DRONE_CAM_PRO = p.computeProjectionMatrixFOV(
+            fov=self.fov,
+            aspect=1.0,
+            nearVal=0.1,
+            farVal=1000.0
+        )
+
+        SEG_FLAG = p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX if segmentation else p.ER_NO_SEGMENTATION_MASK
+
+        [w, h, rgb, dep, seg] = p.getCameraImage(
+            width=self.IMG_RES[0],
+            height=self.IMG_RES[1],
+            shadow=1,
+            viewMatrix=DRONE_CAM_VIEW,
+            projectionMatrix=DRONE_CAM_PRO,
+            flags=SEG_FLAG,
+            physicsClientId=self.CLIENT
+        )
+        ...
+        return rgb, dep, seg
+
     def _get_stacked_obs(self, rgb):
         """
         프레임 버퍼에 저장된 최신 이미지들을 채널 방향으로 이어붙여 stacked observation 생성.
@@ -284,6 +334,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - stack된 이미지를 반환
         """
         rgb, _, _ = self._getDroneImages(0, segmentation=False)
+        # rgb, _, _ = self._getDroneImagesWithOrientation(0, segmentation=False)
 
         # onboard 이미지 저장 (record=True이면)
         if self.RECORD and (self.step_counter % self.IMG_CAPTURE_FREQ == 0):
@@ -318,30 +369,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # return spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
 
     def _computeReward(self):
-        """
-        Reward 함수 예시:
-          - 드론과 착륙 패드 사이의 수평 거리, 고도 차, 수평 속도에 대해 패널티 부여
-          - 착륙 성공 (수평거리 < 0.2m, 고도 차 < 0.2m, 수평 속도 < 0.1m/s) 시 큰 보너스 지급
-          - 드론이 너무 낮은 상태에서 패드와 멀어졌다면(크래시) 추가 패널티
-        """
-        drone_pos = np.array(self.pos[0])
-        pad_pos = np.array(self.landing_pad_base_pos)
-        horizontal_distance = np.linalg.norm(drone_pos[:2] - pad_pos[:2])
-        vertical_distance = drone_pos[2] - pad_pos[2]
-        drone_vel = np.array(self.vel[0])
-        horizontal_speed = np.linalg.norm(drone_vel[:2])
 
-        reward = - horizontal_distance - 0.1 * vertical_distance - 0.01 * horizontal_speed
-
-        # 착륙 성공 조건: 충분히 근접하고 낮은 속도라면 보너스 지급
-        if horizontal_distance < 0.2 and vertical_distance < 0.2 and horizontal_speed < 0.1:
-            reward += 100
-
-        # 크래시 상황: 드론 높이가 매우 낮으면서 패드로부터 멀면 패널티
-        if drone_pos[2] < 0.05 and horizontal_distance > 0.5:
-            reward -= 100
-
-        return reward
+        return self._computeReward_backup_thanks_to_Pawel()
 
     def _get_pad_center_position(self):
         # linkWorldPosition: (vec3, list of 3 floats): Cartesian position of center of mass
@@ -357,7 +386,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             # convert quaternion to euler angles (roll, pitch, yaw) -- ROS URDF convention
             return np.array(p.getEulerFromQuaternion(orientation_in_quaternion), dtype=np.float64)  # (3,)
 
-    def _computeReward_thanks_to_Pawel(self):
+    def _computeReward_backup_thanks_to_Pawel(self):
+        # This is just a backup; not used in the current implementation; ignore this method
         # Parameters
         desired_z_vel = -0.5
         alpha = 30.0
@@ -377,16 +407,16 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # Check if drone follows the desired z velocity
         # moves_down_and_safe_in_z==True if (1) moves down and (2) slower than the desired speed (i.e. |desired_z_vel|)
-        moves_down_and_safe_in_z = (0 > drone_velocity[2]) * (drone_velocity[2] > desired_z_vel)
+        moves_down_and_safe_in_z = (0 >= drone_velocity[2]) * (drone_velocity[2] > desired_z_vel)
 
-        # (1) Compute reward: Vertical velocity
+        # (1) Compute reward: Vertical velocity (safety)
         if moves_down_and_safe_in_z:
             reward_z_vel = (alpha**(drone_velocity[2]/desired_z_vel) -1)/(alpha -1)
         else:  # Penalize if drone moves up or too fast
             if abs(drone_velocity[2])/self.SPEED_LIMIT[2] > 1.1:
                 reward_z_vel = 0
             else:
-                if drone_velocity[2] < desired_z_vel:
+                if drone_velocity[2] <= desired_z_vel:
                     reward_z_vel = -0.01
                 else:
                     reward_z_vel = -0.1
@@ -401,13 +431,14 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # (3) Get total reward
         combined_reward = 0.6 * reward_xy + 1.0 * reward_z_vel
 
+        # (4) Landing/Crashing
         drone_id = self.DRONE_IDS[0]
         if drone_position[2] >= 0.275 and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
             print('landed!')
             combined_reward =  140 + combined_reward
         elif drone_position[2]  < 0.275 and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
             print('crashed!')
-            combined_reward = -1 #normalized_distance_xy * 10 #0#5*distance_xy + combined_reward
+            combined_reward = -1
         else:
             combined_reward =  combined_reward
         distance_x = np.abs(drone_position[0]-UGV_pos[0])
@@ -419,16 +450,19 @@ class VisionLandingAviary(BaseSingleAgentAviary):
     def _computeDone(self):
         """
         종료 조건:
-          - 에피소드 시간 초과 (self.EPISODE_LEN_SEC)
-          - 드론이 지면에 충돌(높이 <= 0)
+        - 드론이 다른 것과 충돌하면 done
+        - 에피소드 시간 초과 (self.EPISODE_LEN_SEC)
         """
-        done = False
-        drone_pos = np.array(self.pos[0])  # nth_drone=0
+        # 드론이 다른것과 충돌하면 done
+        # Note: 땅과 충돌해도 끝남;;
+        if p.getContactPoints(bodyA=1, physicsClientId=self.CLIENT) != ():
+            return True
+
+        # 에피소드 시간 초과
         if self.step_counter * self.TIMESTEP >= self.EPISODE_LEN_SEC:
-            done = True
-        if drone_pos[2] <= 0.0:
-            done = True
-        return done
+            return True
+
+        return False
 
     def _computeInfo(self):
         """
