@@ -106,8 +106,8 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         input_channel_size = obs_space_images.shape[0]
         if self.cfg.ru_debugging:
             # action space size
-            action_size = action_space.n
-            assert action_size == 4, f"action_size is not 4! It is {action_size}."
+            action_size = action_space.shape[0]
+            assert action_size == 3, f"action_size is not 4! It is {action_size}."
             assert num_outputs == 2 * action_size, \
                 f"num_outputs is not 2 * action_size! It is {num_outputs} and action_size is {action_size}."
             # obs_space 채널
@@ -201,7 +201,7 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         obs_dict = input_dict["obs"]
         stacked_images = obs_dict["images"]  # shape: (batch_size, 4, 84, 84)
         if self.cfg.ru_debugging:
-            assert stacked_images.dtype == torch.float64, f"stacked_images.dtype: {stacked_images.dtype}"
+            assert stacked_images.dtype == torch.float32, f"stacked_images.dtype: {stacked_images.dtype}"
         stacked_images /= 255.0  # Normalize the images
         drone_state = obs_dict["drone_state"]  # shape: (batch_size, 20)
 

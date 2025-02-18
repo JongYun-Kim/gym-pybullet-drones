@@ -1,6 +1,5 @@
 import ray
 from ray import tune
-from ray.air.examples.pytorch.torch_fashion_mnist_example import training_data
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
@@ -80,7 +79,7 @@ if __name__ == "__main__":
         "img_fps": 24,
         "episode_len_sec": 5.0,  # 에피소드 길이 (초)
         "include_drone_state": True,
-        "difficulty": 1,
+        "difficulty": 4,
     }
     env_name = "vision_landing_aviary_env"
     register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
@@ -113,7 +112,7 @@ if __name__ == "__main__":
             "env_config": env_config,
             "framework": "torch",
             #
-            "callbacks": CurriculumCallbacks,
+            # "callbacks": CurriculumCallbacks,
             #
             "model": {
                 "custom_model": model_name,
@@ -152,7 +151,7 @@ if __name__ == "__main__":
             #                            [2e6, 0],
             #                            ],
             "clip_param": 0.22,  # 0.3
-            "vf_clip_param": 256,
+            "vf_clip_param": 128,
             # "grad_clip": None,
             "grad_clip": 0.5,
             "kl_target": 0.01,

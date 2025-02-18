@@ -33,6 +33,7 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
 # - [o] drone state를 제대로 obs 넣어줘야 함! (현재는 world 좌표에서 인듯; linear vel, quat 넣으면 될 듯)
 # - [o] Check the curricula
 # - [o] Implement the curriculum learning
+# - [o] Update action space
 # - [ ] Randomize landing pad direction (yaw)
 # - [ ] Randomize drone initial position and orientation
 #   - [ ] LOS check (vision 범위에서 시작해야함)
@@ -92,7 +93,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.pad_link_center_idx = None
         self._resetLandingPad()
         self.pad_height = 0.2725  # 착륙 패드 높이 (착륙후 drone pos 는 이거 보다 높음)
+
+        # 드론 초기화
         initial_xyzs, initial_rpys = self._reset_drone(initial_xyzs, initial_rpys)
+        self.last_action_vel = None
 
         # 상위 클래스 초기화: 이 호출 이후에 self.IMG_RES 등 필요한 속성이 생성됨
         super().__init__(drone_model=drone_model,
@@ -217,11 +221,13 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 카메라 이미지(초기 프레임)를 받아서 프레임 버퍼를 stack_size만큼 채움
           - stacked observation 반환
         """
-        obs = super().reset()
+        self.last_action_vel = np.zeros(3)  # 마지막으로 적용된 속도 명령
 
         # 착륙 패드 리셋 및 초기 업데이트
         self._resetLandingPad()
         self._updateLandingPad()
+
+        obs = super().reset()
 
         return obs
 
@@ -315,8 +321,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
 
         # 드론 상태 정보 (linear vel, angular vel, orientation)를 추가하여 observation 반환
-        state = np.hstack([self.quat[0, :], self.vel[0, :], self.last_action[0, :]])
-        assert state.shape == (11,), f"Invalid drone_state shape in _computeObs: {state.shape}"
+        state = np.hstack([self.quat[0, :], self.vel[0, :], self.last_action_vel])
+        assert state.shape == (10,), f"Invalid drone_state shape in _computeObs: {state.shape}"
 
         return {"images": self._get_stacked_obs(rgb), "drone_state": state}
         # return self._get_stacked_obs(rgb)
@@ -340,8 +346,60 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             shape = (height, width, channels * self.stack_size)
 
         return spaces.Dict({"images": spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8),
-                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=(11,), dtype=np.float64)})
+                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=(10,), dtype=np.float64)})
         # return spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
+
+    def _actionSpace(self):
+        """Returns the action space of the environment.
+        Returns
+        ndarray
+            A Box() of size 1, 3, 4, or 6 depending on the action type.
+        """
+        if self.ACT_TYPE == ActionType.VEL:
+            size = 3
+        elif self.ACT_TYPE == ActionType.RPM:
+            size = 4
+        elif self.ACT_TYPE in [ActionType.TUN, ActionType.DYN, ActionType.PID, ActionType.ONE_D_RPM, ActionType.ONE_D_DYN, ActionType.ONE_D_PID]:
+            raise NotImplementedError("Action type not implemented yet.")
+        else:
+            raise ValueError(f"Invalid ActionType: {self.ACT_TYPE} in VisionLandingAviary._actionSpace()")
+
+        return spaces.Box(low=-1*np.ones(size, dtype=np.float32),
+                          high=np.ones(size, dtype=np.float32),
+                          dtype=np.float32)
+        # return spaces.Box(
+        #     low=-1 * np.ones(size, dtype=np.float64),
+        #     high=np.ones(size, dtype=np.float64),
+        #     dtype=np.float64
+        # )
+
+    def _preprocessAction(self, action):
+        if self.ACT_TYPE == ActionType.VEL:
+            # action: shape=(3,) in [-1, 1]
+            # scale it to the desired velocity in m/s
+            scaled_action = np.clip(action, -1, 1)  # 혹시 모를 안전장치
+            self.last_action_vel = scaled_action
+            target_vel = self.SPEED_LIMIT * scaled_action
+
+            state = self._getDroneStateVector(0)
+            rpm, _, _ = self.ctrl.computeControl(
+                control_timestep=self.AGGR_PHY_STEPS*self.TIMESTEP,
+                cur_pos=state[0:3],
+                cur_quat=state[3:7],
+                cur_vel=state[10:13],
+                cur_ang_vel=state[13:16],
+                target_pos=state[0:3],  # 위치는 고정 (현재 위치)
+                target_rpy=np.array([0,0,state[9]]),  # 현재 yaw 유지
+                target_vel=target_vel
+            )
+            return rpm
+        elif self.ACT_TYPE == ActionType.RPM:
+            return np.array(self.HOVER_RPM * (1+0.05*action))
+
+        elif self.ACT_TYPE in [ActionType.TUN, ActionType.PID, ActionType.DYN, ActionType.ONE_D_RPM, ActionType.ONE_D_DYN, ActionType.ONE_D_PID]:
+            raise NotImplementedError("Action type not implemented yet.")
+        else:
+            raise ValueError(f"Invalid ActionType: {self.ACT_TYPE}")
 
     def _curriculum_v1_rewards(self):
         """
@@ -467,7 +525,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         if self._check_los(pad_position):
             return 0.0
         else:
-            print("    [VisionLandingAviary] env: Out of LOS!")
+            # print("    [VisionLandingAviary] env: Out of LOS!")
             return -0.01
 
     def _check_los(self, pad_position):
