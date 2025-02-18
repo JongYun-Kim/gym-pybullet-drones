@@ -10,7 +10,7 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
         - Link Index: 2, Name: prop2_link,          Position: (-0.02800,  -0.02780,   0.01349)
         - Link Index: 3, Name: prop3_link,          Position: ( 0.02800,  -0.02780,   0.01349)
         - Link Index: 4, Name: center_of_mass_link, Position: (-3.300e-07, 2.831e-05, 0.0134901)
-      - 평면에 착륙하면 z = 0.135 (base==self.pos)
+      - 평면에 착륙하면 z = 0.0135 (base==self.pos)
       - 패드 착륙
         - 이론상: z = 0.2860 == 0.2725 + 0.0135 (heliport_base + drone_base_height)
         - 실험서: z = 0.28754655
@@ -191,6 +191,20 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                                           p.getQuaternionFromEuler([0, 0, 0]),
                                           physicsClientId=self.CLIENT)
 
+    def _get_pad_center_position(self):
+        # linkWorldPosition: (vec3, list of 3 floats): Cartesian position of center of mass
+        position = p.getLinkState(self.landing_pad_id, self.pad_link_center_idx, physicsClientId=self.CLIENT)[0]
+        return np.array(position, dtype=np.float64)  # (3,)
+
+    def _get_pad_center_orientation(self, quaternion=True):
+        orientation_in_quaternion = p.getLinkState(self.landing_pad_id, self.pad_link_center_idx, physicsClientId=self.CLIENT)[1]
+        if quaternion:
+            # linkWorldOrientation: (vec4, list of 4 floats): Cartesian orientation of center of mass in XYZW quaternion
+            return np.array(orientation_in_quaternion, dtype=np.float64)  # (4,)
+        else:
+            # convert quaternion to euler angles (roll, pitch, yaw) -- ROS URDF convention
+            return np.array(p.getEulerFromQuaternion(orientation_in_quaternion), dtype=np.float64)  # (3,)
+
     def reset(self):
         """
         환경 리셋:
@@ -207,53 +221,6 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         return obs
 
-    def _getDroneImages_org(self, nth_drone, segmentation: bool=True):
-        if self.IMG_RES is None:
-            print("[ERROR] in VisionLandingAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
-            exit()
-
-        # 기존의 드론 회전 행렬 관련 코드는 제거하거나 무시
-        # rot_mat = np.array(p.getMatrixFromQuaternion(self.quat[nth_drone, :])).reshape(3, 3)
-
-        # 카메라 위치: 드론 중심에서 필요에 따라 약간 아래로 배치 (예: [0, 0, 0.0] 또는 [-0.1] 등)
-        # Do figure out the best position for the camera for your application
-        cameraEye = self.pos[nth_drone, :] + np.array([0, 0, 0.087])
-
-        # 카메라 목표: 드론의 위치에서 충분히 아래쪽(예: 1000m 아래)로 설정
-        target = self.pos[nth_drone, :] + np.array([0, 0, -1000])
-
-        # 업 벡터: 카메라 이미지의 “위쪽” 방향을 결정 (여기서는 [0, 1, 0] 사용)
-        upVector = [0, 1, 0]
-
-        DRONE_CAM_VIEW = p.computeViewMatrix(
-            cameraEyePosition=cameraEye,
-            cameraTargetPosition=target,
-            cameraUpVector=upVector,
-            physicsClientId=self.CLIENT
-        )
-
-        DRONE_CAM_PRO = p.computeProjectionMatrixFOV(
-            fov=self.fov,
-            aspect=1.0,
-            nearVal=0.1,    # near plane 값을 적절히 조절 (예: 드론 크기 고려)
-            farVal=1000.0
-        )
-
-        SEG_FLAG = p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX if segmentation else p.ER_NO_SEGMENTATION_MASK
-        [w, h, rgb, dep, seg] = p.getCameraImage(
-            width=self.IMG_RES[0],
-            height=self.IMG_RES[1],
-            shadow=1,
-            viewMatrix=DRONE_CAM_VIEW,
-            projectionMatrix=DRONE_CAM_PRO,
-            flags=SEG_FLAG,
-            physicsClientId=self.CLIENT
-        )
-        rgb = np.reshape(rgb, (h, w, 4))
-        dep = np.reshape(dep, (h, w))
-        seg = np.reshape(seg, (h, w))
-        return rgb, dep, seg
-
     def _getDroneImages(self, nth_drone, segmentation: bool=True):
         if self.IMG_RES is None:
             print("[ERROR] in VisionLandingAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
@@ -264,7 +231,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         rot_mat = np.array(p.getMatrixFromQuaternion(quat_drone)).reshape((3,3))
 
         # 2) 드론에서의 카메라 offset, 보고싶은 방향, up 벡터
-        camera_offset = np.array([0., 0., 0.087])        # 드론 중심 대비 카메라 위치
+        camera_offset = np.array([0., 0., 0.02])        # 드론 중심 대비 카메라 위치
         camera_target_offset = np.array([0., 0., -1.]) # 아래 방향을 보고 싶다면 -z
         camera_up_in_drone_frame = np.array([0., 1., 0.])
 
@@ -283,8 +250,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         DRONE_CAM_PRO = p.computeProjectionMatrixFOV(
             fov=self.fov,
             aspect=1.0,
-            nearVal=0.1,
-            farVal=1000.0
+            nearVal=0.03,
+            farVal=200.0
         )
 
         SEG_FLAG = p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX if segmentation else p.ER_NO_SEGMENTATION_MASK
@@ -371,81 +338,6 @@ class VisionLandingAviary(BaseSingleAgentAviary):
     def _computeReward(self):
 
         return self._computeReward_backup_thanks_to_Pawel()
-
-    def _get_pad_center_position(self):
-        # linkWorldPosition: (vec3, list of 3 floats): Cartesian position of center of mass
-        position = p.getLinkState(self.landing_pad_id, self.pad_link_center_idx, physicsClientId=self.CLIENT)[0]
-        return np.array(position, dtype=np.float64)  # (3,)
-
-    def _get_pad_center_orientation(self, quaternion=True):
-        orientation_in_quaternion = p.getLinkState(self.landing_pad_id, self.pad_link_center_idx, physicsClientId=self.CLIENT)[1]
-        if quaternion:
-            # linkWorldOrientation: (vec4, list of 4 floats): Cartesian orientation of center of mass in XYZW quaternion
-            return np.array(orientation_in_quaternion, dtype=np.float64)  # (4,)
-        else:
-            # convert quaternion to euler angles (roll, pitch, yaw) -- ROS URDF convention
-            return np.array(p.getEulerFromQuaternion(orientation_in_quaternion), dtype=np.float64)  # (3,)
-
-    def _computeReward_backup_thanks_to_Pawel(self):
-        # This is just a backup; not used in the current implementation; ignore this method
-        # Parameters
-        desired_z_vel = -0.5
-        alpha = 30.0
-        xy_must_smaller_than = 10.0
-        rho = 30.0
-
-        # Get drone and UGV positions and velocities
-        UGV_pos = self._get_pad_center_position()  # p.getLinkState(self.landing_pad_id,..) in np.array
-        drone_state = self._getDroneStateVector(0)  # nth_drone=0
-        drone_position = drone_state[0:3]  # x, y, z
-        drone_velocity = drone_state[10:13]  # vx, vy, vz (linear velocity)
-
-        # Get distance errors: xy, z, and angle
-        distance_xy = np.linalg.norm(drone_position[0:2]-UGV_pos[0:2])
-        distance_z = np.linalg.norm(drone_position[2:3]-UGV_pos[2:3])
-        angle = np.rad2deg(np.arctan2(distance_xy,distance_z))  # be careful about the angle range
-
-        # Check if drone follows the desired z velocity
-        # moves_down_and_safe_in_z==True if (1) moves down and (2) slower than the desired speed (i.e. |desired_z_vel|)
-        moves_down_and_safe_in_z = (0 >= drone_velocity[2]) * (drone_velocity[2] > desired_z_vel)
-
-        # (1) Compute reward: Vertical velocity (safety)
-        if moves_down_and_safe_in_z:
-            reward_z_vel = (alpha**(drone_velocity[2]/desired_z_vel) -1)/(alpha -1)
-        else:  # Penalize if drone moves up or too fast
-            if abs(drone_velocity[2])/self.SPEED_LIMIT[2] > 1.1:
-                reward_z_vel = 0
-            else:
-                if drone_velocity[2] <= desired_z_vel:
-                    reward_z_vel = -0.01
-                else:
-                    reward_z_vel = -0.1
-
-        # (2) Compute reward: Horizontal distance
-        if distance_xy < xy_must_smaller_than:
-            normalized_distance_xy = (xy_must_smaller_than - distance_xy) / (xy_must_smaller_than)
-            reward_xy = (rho**normalized_distance_xy -1)/(rho -1)
-        else:  # Too far!
-            reward_xy = 0 #-distance_xy
-
-        # (3) Get total reward
-        combined_reward = 0.6 * reward_xy + 1.0 * reward_z_vel
-
-        # (4) Landing/Crashing
-        drone_id = self.DRONE_IDS[0]
-        if drone_position[2] >= 0.275 and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
-            print('landed!')
-            combined_reward =  140 + combined_reward
-        elif drone_position[2]  < 0.275 and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
-            print('crashed!')
-            combined_reward = -1
-        else:
-            combined_reward =  combined_reward
-        distance_x = np.abs(drone_position[0]-UGV_pos[0])
-        distance_y = np.abs(drone_position[1]-UGV_pos[1])
-        if np.abs(angle) > 30 and (distance_y > 0.8 and distance_x > 0.8):
-            combined_reward = -0.01
-        return combined_reward
 
     def _compute_horizontal_dist_reward(self):
         # Get relative xy distance b/w the drone and the helipad
@@ -586,6 +478,114 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         """
         self._updateLandingPad()
         return super().step(action)
+
+    def _computeReward_backup_thanks_to_Pawel(self):
+        # This is just a backup; not used in the current implementation; ignore this method
+        # Parameters
+        desired_z_vel = -0.5
+        alpha = 30.0
+        xy_must_smaller_than = 10.0
+        rho = 30.0
+
+        # Get drone and UGV positions and velocities
+        UGV_pos = self._get_pad_center_position()  # p.getLinkState(self.landing_pad_id,..) in np.array
+        drone_state = self._getDroneStateVector(0)  # nth_drone=0
+        drone_position = drone_state[0:3]  # x, y, z
+        drone_velocity = drone_state[10:13]  # vx, vy, vz (linear velocity)
+
+        # Get distance errors: xy, z, and angle
+        distance_xy = np.linalg.norm(drone_position[0:2]-UGV_pos[0:2])
+        distance_z = np.linalg.norm(drone_position[2:3]-UGV_pos[2:3])
+        angle = np.rad2deg(np.arctan2(distance_xy,distance_z))  # be careful about the angle range
+
+        # Check if drone follows the desired z velocity
+        # moves_down_and_safe_in_z==True if (1) moves down and (2) slower than the desired speed (i.e. |desired_z_vel|)
+        moves_down_and_safe_in_z = (0 >= drone_velocity[2]) * (drone_velocity[2] > desired_z_vel)
+
+        # (1) Compute reward: Vertical velocity (safety)
+        if moves_down_and_safe_in_z:
+            reward_z_vel = (alpha**(drone_velocity[2]/desired_z_vel) -1)/(alpha -1)
+        else:  # Penalize if drone moves up or too fast
+            if abs(drone_velocity[2])/self.SPEED_LIMIT[2] > 1.1:
+                reward_z_vel = 0
+            else:
+                if drone_velocity[2] <= desired_z_vel:
+                    reward_z_vel = -0.01
+                else:
+                    reward_z_vel = -0.1
+
+        # (2) Compute reward: Horizontal distance
+        if distance_xy < xy_must_smaller_than:
+            normalized_distance_xy = (xy_must_smaller_than - distance_xy) / (xy_must_smaller_than)
+            reward_xy = (rho**normalized_distance_xy -1)/(rho -1)
+        else:  # Too far!
+            reward_xy = 0 #-distance_xy
+
+        # (3) Get total reward
+        combined_reward = 0.6 * reward_xy + 1.0 * reward_z_vel
+
+        # (4) Landing/Crashing
+        drone_id = self.DRONE_IDS[0]
+        if drone_position[2] >= 0.275 and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
+            print('landed!')
+            combined_reward =  140 + combined_reward
+        elif drone_position[2]  < 0.275 and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
+            print('crashed!')
+            combined_reward = -1
+        else:
+            combined_reward =  combined_reward
+        distance_x = np.abs(drone_position[0]-UGV_pos[0])
+        distance_y = np.abs(drone_position[1]-UGV_pos[1])
+        if np.abs(angle) > 30 and (distance_y > 0.8 and distance_x > 0.8):
+            combined_reward = -0.01
+        return combined_reward
+
+    def _getDroneImages_org(self, nth_drone, segmentation: bool=True):
+        if self.IMG_RES is None:
+            print("[ERROR] in VisionLandingAviary._getDroneImages(), remember to set self.IMG_RES to np.array([width, height])")
+            exit()
+
+        # 기존의 드론 회전 행렬 관련 코드는 제거하거나 무시
+        # rot_mat = np.array(p.getMatrixFromQuaternion(self.quat[nth_drone, :])).reshape(3, 3)
+
+        # 카메라 위치: 드론 중심에서 필요에 따라 약간 아래로 배치 (예: [0, 0, 0.0] 또는 [-0.1] 등)
+        # Do figure out the best position for the camera for your application
+        cameraEye = self.pos[nth_drone, :] + np.array([0, 0, 0.087])
+
+        # 카메라 목표: 드론의 위치에서 충분히 아래쪽(예: 1000m 아래)로 설정
+        target = self.pos[nth_drone, :] + np.array([0, 0, -1000])
+
+        # 업 벡터: 카메라 이미지의 “위쪽” 방향을 결정 (여기서는 [0, 1, 0] 사용)
+        upVector = [0, 1, 0]
+
+        DRONE_CAM_VIEW = p.computeViewMatrix(
+            cameraEyePosition=cameraEye,
+            cameraTargetPosition=target,
+            cameraUpVector=upVector,
+            physicsClientId=self.CLIENT
+        )
+
+        DRONE_CAM_PRO = p.computeProjectionMatrixFOV(
+            fov=self.fov,
+            aspect=1.0,
+            nearVal=0.1,    # near plane 값을 적절히 조절 (예: 드론 크기 고려)
+            farVal=1000.0
+        )
+
+        SEG_FLAG = p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX if segmentation else p.ER_NO_SEGMENTATION_MASK
+        [w, h, rgb, dep, seg] = p.getCameraImage(
+            width=self.IMG_RES[0],
+            height=self.IMG_RES[1],
+            shadow=1,
+            viewMatrix=DRONE_CAM_VIEW,
+            projectionMatrix=DRONE_CAM_PRO,
+            flags=SEG_FLAG,
+            physicsClientId=self.CLIENT
+        )
+        rgb = np.reshape(rgb, (h, w, 4))
+        dep = np.reshape(dep, (h, w))
+        seg = np.reshape(seg, (h, w))
+        return rgb, dep, seg
 
     def convert_onboard_images_to_video(self, output_file="onboard_video.mp4", fps=24):
         """
