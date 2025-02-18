@@ -1,0 +1,67 @@
+FROM rayproject/ray:2.1.0-py39-cu116
+
+# Switch to root for installation tasks
+USER root
+
+# Remove kubernetes repository file if it exists
+RUN rm -f /etc/apt/sources.list.d/kubernetes.list || true
+
+# Update apt and install required packages
+RUN apt-get update && \
+    apt-get install -y nano openssh-server ffmpeg git x11-apps iproute2 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Create directory for the SSH daemon
+RUN mkdir -p /var/run/sshd
+
+# Change SSH port from 22 to 2222 in the configuration
+RUN sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config
+
+# (Optional) Set password for the 'ray' user (e.g., password "rllib")
+RUN echo "ray:rllib" | chpasswd
+
+# Install PyTorch and related packages with CUDA 11.6 support
+RUN pip install torch==1.13.1+cu116 \
+                torchvision==0.14.1+cu116 \
+                torchaudio==0.13.1 \
+                --extra-index-url https://download.pytorch.org/whl/cu116
+
+# Install pygame
+RUN pip install pygame==2.1.2
+
+# Uninstall numpy and install the desired version
+RUN pip uninstall -y numpy && pip install numpy==1.23.4
+
+# Install additional Python packages: pybullet and stable-baselines3 (without dependencies)
+RUN pip install pybullet==3.2.5 && \
+    pip install stable-baselines3==1.6.2 --no-deps
+
+# termcolor package for 'from termcolor import cprint'
+RUN pip install termcolor
+
+# Clone gym-pybullet-drones repository and install it in editable mode
+RUN git clone --branch landing-rl https://github.com/JongYun-Kim/gym-pybullet-drones.git /home/ray/gym-pybullet-drones && \
+    chown -R ray:users /home/ray/gym-pybullet-drones && \
+    pip install -e /home/ray/gym-pybullet-drones
+
+# Generate SSH host keys and adjust permissions
+RUN ssh-keygen -A && \
+    chmod 644 /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*
+
+# Expose port 2222 for SSH access
+EXPOSE 2222
+
+# Switch to the 'ray' user and set the working directory
+USER ray
+WORKDIR /home/ray
+
+# Create the resources directory and copy in the additional files
+RUN mkdir -p resources
+COPY --chown=ray:ray test_torch.py resources/
+COPY --chown=ray:ray ray_init_test.py resources/
+COPY --chown=ray:ray start_v2.sh resources/start.sh
+RUN chmod +x resources/start.sh
+
+# Set the default command to launch the start script from the resources folder
+CMD ["/home/ray/resources/start.sh"]
