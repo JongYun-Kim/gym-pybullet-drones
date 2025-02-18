@@ -34,15 +34,15 @@ class CurriculumCallbacks(DefaultCallbacks):
         #     difficulty = 3
         # else:
         #     difficulty = 4
-        if episode_total < 800:
+        if episode_total < 4000:
             difficulty = 1
-        elif episode_total < 2000:
+        elif episode_total < 8000:
             difficulty = 2
-        elif episode_total < 3600:
+        elif episode_total < 12000:
             difficulty = 3
         else:
             difficulty = 4
-        print(f" @@@         current difficulty: {difficulty}              @@@\n")
+        print(f" @@@           current difficulty: {difficulty}                @@@\n")
 
         # Set difficulty
         algorithm.workers.foreach_worker(
@@ -56,10 +56,12 @@ class CurriculumCallbacks(DefaultCallbacks):
 
 if __name__ == "__main__":
 
-    do_debug = False
-    # do_debug = True
+    # do_debug = False
+    do_debug = True
     if do_debug:
         ray.init(local_mode=True)
+
+    do_curriculum_learning = False
 
     # register your custom environment
     env_config = {
@@ -80,7 +82,7 @@ if __name__ == "__main__":
         "img_fps": 30,
         "episode_len_sec": 30.0,  # 에피소드 길이 (초)
         "include_drone_state": True,
-        "difficulty": 1,
+        "difficulty": 1 if do_curriculum_learning else 4,
     }
     env_name = "vision_landing_aviary_env"
     register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
@@ -113,7 +115,7 @@ if __name__ == "__main__":
             "env_config": env_config,
             "framework": "torch",
             #
-            "callbacks": CurriculumCallbacks,
+            "callbacks": CurriculumCallbacks if do_curriculum_learning else None,
             #
             "model": {
                 "custom_model": model_name,
@@ -154,7 +156,7 @@ if __name__ == "__main__":
             "clip_param": 0.22,  # 0.3
             "vf_clip_param": 128,
             # "grad_clip": None,
-            "grad_clip": 0.5,
+            "grad_clip": 20.0,
             "kl_target": 0.01,
         },
     )

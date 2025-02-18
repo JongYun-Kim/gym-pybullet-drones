@@ -223,8 +223,10 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
 
         # (5) Check for NaN/Inf in the output
         if self.cfg.ru_debugging:
-            if torch.isnan(logits).any() or torch.isinf(logits).any():
-                raise ValueError("logits에서 NaN 또는 Inf 발견!")
+            if torch.isnan(logits).any():
+                raise ValueError("logits에서 NaN 발생!")
+            if torch.isinf(logits).any():
+                raise ValueError("logits에서 Inf 발생!")
 
         return logits, state
 
