@@ -15,6 +15,19 @@ import numpy as np
 # TODOs
 # - [ ] Add evaluation during training
 
+
+class WatchEncoderGradNormCallbacks(DefaultCallbacks):
+    def on_train_result(self, *, algorithm, result: dict, **kwargs):
+        # Assuming you can access the model via the trainer
+        model = algorithm.get_policy().model
+        for name, param in model.encoder.named_parameters():
+            if param.grad is not None:
+                grad_norm = param.grad.data.norm().item()
+                result[f"grad_norm/{name}"] = grad_norm
+            else:
+                print(f"@@@ In '{self.__class__.__name__}' {name} has no grad @@@")
+
+
 class CurriculumCallbacks(DefaultCallbacks):
     def on_train_result(self, *, algorithm, result, **kwargs):
         print("\n@@@ on_train_result starts in CurriculumCallbacks @@@\n")
@@ -117,7 +130,8 @@ if __name__ == "__main__":
             "env_config": env_config,
             "framework": "torch",
             #
-            "callbacks": CurriculumCallbacks if do_curriculum_learning else None,
+            # "callbacks": CurriculumCallbacks if do_curriculum_learning else None,
+            "callbacks": WatchEncoderGradNormCallbacks,
             #
             "model": {
                 "custom_model": model_name,
@@ -155,10 +169,10 @@ if __name__ == "__main__":
             #                            [1e6, 0.0001],
             #                            [2e6, 0],
             #                            ],
-            "clip_param": 0.22,  # 0.3
+            "clip_param": 0.21,  # 0.3
             "vf_clip_param": 128,
             # "grad_clip": None,
-            "grad_clip": 20.0,
+            "grad_clip": 10.0,
             "kl_target": 0.01,
         },
     )
