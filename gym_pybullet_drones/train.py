@@ -104,7 +104,7 @@ if __name__ == "__main__":
     # train
     tune.run(
         "PPO",
-        name="0218_toddler_init",
+        name="nan_test0219",
         # resume=True,
         # stop={"episode_reward_mean": -101},
         # stop={"training_iteration": 300},
@@ -124,13 +124,13 @@ if __name__ == "__main__":
                 "custom_model_config": custom_model_config,
                 # "custom_action_dist": "squashed_gaussian",
             },
-            "num_gpus": 3,
-            "num_workers": 24,
+            "num_gpus": 1,
+            "num_workers": 22,
             "num_envs_per_worker": 1,
             "rollout_fragment_length": 900,
-            "train_batch_size": 24*900,
-            "sgd_minibatch_size": 1024,
-            "num_sgd_iter": 20,
+            "train_batch_size": 22*900,
+            "sgd_minibatch_size": 512,
+            "num_sgd_iter": 40,
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
             "lr": 4e-5,
@@ -138,7 +138,7 @@ if __name__ == "__main__":
             #                 [1e7, 1e-7],
             #                 ],
             # Must be fine-tuned when sharing vf-policy layers
-            "vf_loss_coeff": 0.25,
+            "vf_loss_coeff": 0.20,
             # In the...
             "use_critic": True,
             "use_gae": True,
