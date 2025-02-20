@@ -616,7 +616,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         if p.getContactPoints(bodyA=1, physicsClientId=self.CLIENT) != ():
             return True
         # 에피소드 시간 초과
-        if self.step_counter * self.TIMESTEP >= self.EPISODE_LEN_SEC:
+        # Note: self.step_counter hasn't been updated in step() yet;
+        #       So, it is smaller than actual step count by self.AGGR_PHY_STEPS.
+        if self.step_counter >= self.EPISODE_LEN_SEC * self.SIM_FREQ:
             return True
 
         return False
