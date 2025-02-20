@@ -12,18 +12,30 @@ from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
 import numpy as np
 
+from utils.my_rllib_utils import create_multi_callbacks_from_classes
+
 # TODOs
 # - [ ] Add evaluation during training
+# - [ ] Track log_std of the policy output
 
 
-class WatchEncoderGradNormCallbacks(DefaultCallbacks):
+class LogGradAndWeightStatsCallbacks(DefaultCallbacks):
     def on_train_result(self, *, algorithm, result: dict, **kwargs):
         # Access the model from the policy
         model = algorithm.get_policy().model
 
-        # Log weight and gradient norms for encoder and embedding
-        modules_to_monitor = [model.encoder, model.embedding]
-        for module in modules_to_monitor:
+        # Safeguard "custom_metrics" in result
+        if "custom_metrics" not in result:
+            result["custom_metrics"] = {}
+
+        modules_to_monitor = {
+            "encoder": model.encoder,
+            "embedding": model.embedding,
+        }
+        for module_name, module in modules_to_monitor.items():
+            # Ensure a nested dict exists for this module_name
+            if module_name not in result["custom_metrics"]:
+                result["custom_metrics"][module_name] = {}
             for layer_idx, layer in enumerate(module):
                 for name, param in layer.named_parameters():
                     if param.requires_grad:
@@ -31,12 +43,15 @@ class WatchEncoderGradNormCallbacks(DefaultCallbacks):
                         grad_norm = param.grad.data.norm().item() if param.grad is not None else float('nan')
                         max_weight = param.data.abs().max().item()
                         max_grad = param.grad.data.abs().max().item() if param.grad is not None else float('nan')
-                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_weight_norm"] = weight_norm
-                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_grad_norm"] = grad_norm
-                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_max_weight"] = max_weight
-                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_max_grad"] = max_grad
+
+                        # Use a neat hierarchical naming pattern within each module
+                        base_tag = f"L{layer_idx}/{name}"
+                        result["custom_metrics"][module_name][f"{base_tag}_weight_norm"] = weight_norm
+                        result["custom_metrics"][module_name][f"{base_tag}_grad_norm"] = grad_norm
+                        result["custom_metrics"][module_name][f"{base_tag}_max_weight"] = max_weight
+                        result["custom_metrics"][module_name][f"{base_tag}_max_grad"] = max_grad
                     else:
-                        print(f"@@@ In '{self.__class__.__name__}': Encoder parameter '{name}' has no grad @@@")
+                        print(f"@@@ Parameter '{name}' in '{module_name}' layer {layer_idx} has no grad!! @@@")
 
 
 class CurriculumCallbacks(DefaultCallbacks):
@@ -44,10 +59,10 @@ class CurriculumCallbacks(DefaultCallbacks):
         print("\n@@@ on_train_result starts in CurriculumCallbacks @@@\n")
 
         # Useful metrics
-        training_iteration = result["training_iteration"]
+        # training_iteration = result["training_iteration"]
         episode_total = result["episodes_total"]
-        episode_this_iter = result["episodes_this_iter"]
-        episode_reward_mean = result["episode_reward_mean"]
+        # episode_this_iter = result["episodes_this_iter"]
+        # episode_reward_mean = result["episode_reward_mean"]
         timesteps_total = result["timesteps_total"]
 
         # Difficulty Logic
@@ -81,14 +96,27 @@ class CurriculumCallbacks(DefaultCallbacks):
 
 if __name__ == "__main__":
 
+    # [1] Ray init
     do_debug = False
     # do_debug = True
     if do_debug:
         ray.init(local_mode=True)
 
+    # [2] Callbacks
+    # Determine whether to use
+    #   1. Curriculum learning (CurriculumCallbacks) and
+    #   2. Log grad and weight stats (LogGradAndWeightStatsCallbacks)
     do_curriculum_learning = False
+    enable_log_grad_and_weight_stats = True
+    callback_classes = []
+    if do_curriculum_learning:
+        callback_classes.append(CurriculumCallbacks)
+    if enable_log_grad_and_weight_stats:
+        callback_classes.append(LogGradAndWeightStatsCallbacks)
+    multi_callbacks, callback_names = create_multi_callbacks_from_classes(callback_classes)
 
-    # register your custom environment
+    # [3] Env
+    # Register your custom environment
     env_config = {
         "drone_model": DroneModel.CF2X,
         "initial_xyzs": None,
@@ -100,18 +128,19 @@ if __name__ == "__main__":
         "record": False,
         "obs": ObservationType.BW,
         "act": ActionType.VEL,
-        "channel_first": True,  # nn.Conv2d() 사용시 channel_first=True
-        "stack_size": 4,  # 이미지 프레임 stack 개수
-        "fov": 80.0,  # drone 카메라 시야각 (degree)
-        "img_res": np.array([84, 84]),  # original: np.array([64, 48])
+        "channel_first": True,  # torch's nn.Conv2d(): channel_first=True
+        "stack_size": 4,  # num of stacked frames
+        "fov": 80.0,  # field of view of the drone's camera in degrees
+        "img_res": np.array([84, 84]),  # num pixels of the square image
         "img_fps": 30,
-        "episode_len_sec": 30.0,  # 에피소드 길이 (초)
+        "episode_len_sec": 30.0,  # episode length in "seconds" (float!)
         "include_drone_state": True,
         "difficulty": 1 if do_curriculum_learning else 4,
     }
     env_name = "vision_landing_aviary_env"
     register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
 
+    # [4] Model
     # Set up custom model configuration
     my_config_instance = VisionLanderPPOConfig()
     my_config_instance.ru_debugging = True
@@ -121,16 +150,16 @@ if __name__ == "__main__":
         "config_instance": my_config_instance,
         "config_in_dict": my_config_instance.to_dict(),
     }
-
-    # register your custom model
+    # Register your custom model
     model_name = "vision_lander_ppo"
     ModelCatalog.register_custom_model(model_name, VisionLanderPPO)
     # ModelCatalog.register_custom_action_dist("squashed_gaussian", TorchSquashedGaussian)
 
-    # train
+    # [5] Train
     tune.run(
         "PPO",
-        name="nan_test0219",
+        # name="hyprprm_tune-250220",
+        name="delete_me_me",
         # resume=True,
         # stop={"episode_reward_mean": -101},
         # stop={"training_iteration": 300},
@@ -143,8 +172,7 @@ if __name__ == "__main__":
             "env_config": env_config,
             "framework": "torch",
             #
-            # "callbacks": CurriculumCallbacks if do_curriculum_learning else None,
-            "callbacks": WatchEncoderGradNormCallbacks,
+            "callbacks": multi_callbacks,
             #
             "model": {
                 "custom_model": model_name,
@@ -161,12 +189,17 @@ if __name__ == "__main__":
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
             "lr": 4e-5,
-            # "lr_schedule": [[0, 2e-5],
-            #                 [1e7, 1e-7],
-            #                 ],
+            "lr_schedule": [[0,     4e-5],
+                            [2e6,   2e-5],
+                            [2.5e6, 1.8e-5],
+                            [3e6,   1.5e-5],
+                            [3.5e6, 1.3e-5],
+                            [4e6,   1e-5],
+                            [4.5e6, 9e-6],
+                            [5e6,   8e-6],
+                            ],
             # Must be fine-tuned when sharing vf-policy layers
-            "vf_loss_coeff": 0.20,
-            # In the...
+            "vf_loss_coeff": 0.10,
             "use_critic": True,
             "use_gae": True,
             "gamma": 0.991,
@@ -189,6 +222,74 @@ if __name__ == "__main__":
             "kl_target": 0.01,
         },
     )
+    #
+    # Below is experimental; ignore it.
+    #
+    # tune.run_experiments({
+    #     "nan_test0219": {
+    #         "run": "PPO",
+    #         "env": env_name,
+    #         "env_config": env_config,
+    #         "checkpoint_freq": 8,
+    #         "keep_checkpoints_num": 16,
+    #         "checkpoint_at_end": True,
+    #         "checkpoint_score_attr": "episode_reward_mean",
+    #         "config": {
+    #             "framework": "torch",
+    #             #
+    #             # "callbacks": CurriculumCallbacks if do_curriculum_learning else None,
+    #             "callbacks": WatchEncoderGradNormCallbacks,
+    #             #
+    #             "model": {
+    #                 "custom_model": model_name,
+    #                 "custom_model_config": custom_model_config,
+    #                 # "custom_action_dist": "squashed_gaussian",
+    #             },
+    #             "num_gpus": 1,
+    #             "num_workers": 22,
+    #             "num_envs_per_worker": 1,
+    #             "rollout_fragment_length": 900,
+    #             "train_batch_size": 22*900,
+    #             "sgd_minibatch_size": 512,
+    #             "num_sgd_iter": 40,
+    #             # "batch_mode": "complete_episodes",
+    #             # "batch_mode": "truncate_episodes",
+    #             "lr": 5e-5,
+    #             # "lr_schedule": [[0, 2e-5],
+    #             #                 [1e7, 1e-7],
+    #             #                 ],
+    #             # Must be fine-tuned when sharing vf-policy layers
+    #             "vf_loss_coeff": 0.10,
+    #             # In the...
+    #             "use_critic": True,
+    #             "use_gae": True,
+    #             "gamma": 0.991,
+    #             "lambda": 0.96,
+    #             "kl_coeff": 0,  # no PPO penalty term; we use PPO-clip anyway; if none zero, be careful Nan in tensors!
+    #             # "entropy_coeff": tune.grid_search([0, 0.001, 0.0025, 0.01]),
+    #             # "entropy_coeff_schedule": None,
+    #             # "entropy_coeff_schedule": [[0, 0.003],
+    #             #                            [5e4, 0.002],
+    #             #                            [1e5, 0.001],
+    #             #                            [2e5, 0.0005],
+    #             #                            [5e5, 0.0002],
+    #             #                            [1e6, 0.0001],
+    #
+    #             #                            [2e6, 0],
+    #             "clip_param": 0.21, "vf_clip_param": 128,
+    #             # "grad_clip": None,
+    #             "grad_clip": 10.0,
+    #             "kl_target": 0.01,
+    #         },
+    #     },
+    #     "nan_test0219": {
+    #         "run": "PPO",
+    #         "env": env_name,
+    #         "env_config": env_config,
+    #         "checkpoint_freq": 8,
+    #         "keep_checkpoints_num": 16,
+    #         "checkpoint_at_end": True,
+
 
 
 
