@@ -18,14 +18,25 @@ import numpy as np
 
 class WatchEncoderGradNormCallbacks(DefaultCallbacks):
     def on_train_result(self, *, algorithm, result: dict, **kwargs):
-        # Assuming you can access the model via the trainer
+        # Access the model from the policy
         model = algorithm.get_policy().model
-        for name, param in model.encoder.named_parameters():
-            if param.grad is not None:
-                grad_norm = param.grad.data.norm().item()
-                result[f"grad_norm/{name}"] = grad_norm
-            else:
-                print(f"@@@ In '{self.__class__.__name__}' {name} has no grad @@@")
+
+        # Log weight and gradient norms for encoder and embedding
+        modules_to_monitor = [model.encoder, model.embedding]
+        for module in modules_to_monitor:
+            for layer_idx, layer in enumerate(module):
+                for name, param in layer.named_parameters():
+                    if param.requires_grad:
+                        weight_norm = param.data.norm().item()
+                        grad_norm = param.grad.data.norm().item() if param.grad is not None else float('nan')
+                        max_weight = param.data.abs().max().item()
+                        max_grad = param.grad.data.abs().max().item() if param.grad is not None else float('nan')
+                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_weight_norm"] = weight_norm
+                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_grad_norm"] = grad_norm
+                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_max_weight"] = max_weight
+                        result[f"{module.__class__.__name__}/{layer_idx}/{name}_max_grad"] = max_grad
+                    else:
+                        print(f"@@@ In '{self.__class__.__name__}': Encoder parameter '{name}' has no grad @@@")
 
 
 class CurriculumCallbacks(DefaultCallbacks):
@@ -104,6 +115,7 @@ if __name__ == "__main__":
     # Set up custom model configuration
     my_config_instance = VisionLanderPPOConfig()
     my_config_instance.ru_debugging = True
+    my_config_instance.use_layer_norm = True
     custom_model_config = {
         "config_instance": my_config_instance,
         "config_in_dict": my_config_instance.to_dict(),
