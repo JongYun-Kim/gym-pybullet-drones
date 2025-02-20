@@ -617,8 +617,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             return True
         # 에피소드 시간 초과
         # Note: self.step_counter hasn't been updated in step() yet;
-        #       So, it is smaller than actual step count by self.AGGR_PHY_STEPS.
-        if self.step_counter >= self.EPISODE_LEN_SEC * self.SIM_FREQ:
+        #       So, it is smaller than actual step count by self.AGGR_PHY_STEPS at this line.
+        if (self.step_counter + self.AGGR_PHY_STEPS) >= self.EPISODE_LEN_SEC * self.SIM_FREQ:
             return True
 
         return False
