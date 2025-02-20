@@ -9,6 +9,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 # custom modules
+import contextlib
 # from yours
 
 
@@ -16,12 +17,15 @@ import numpy as np
 class VisionLanderPPOConfig:
     ru_debugging: bool = False
     is_shared_net: bool= False
+    use_anomaly_detection: bool = False
     # Encoder configs
     encoder_channels: List[int] = field(default_factory=lambda: [32, 32, 32, 32])
     kernel_sizes: List[int] = field(default_factory=lambda: [3, 3, 3, 3])
     strides: List[int] = field(default_factory=lambda: [2, 1, 1, 1])
-    # policy, value configs
+    # Embedding layer
     embed_dim: int = 50  # encoder+drone_state -> 임베딩 후 차원
+    use_layer_norm: bool = True
+    # policy, value configs
     policy_hidden_sizes: List[int] = field(default_factory=lambda: [512, 512])
     value_hidden_sizes: List[int] = field(default_factory=lambda: [512, 512])
     # Add more if you need more model config
@@ -147,9 +151,10 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         # (2) Embedding layer
         #     - encoder out(Flatten) + drone_state -> Linear -> BN -> Tanh
         #     - 최종적으로 embed_dim
+        norm_layer = nn.LayerNorm(self.cfg.embed_dim) if self.cfg.use_layer_norm else nn.BatchNorm1d(self.cfg.embed_dim)
         self.embedding = nn.Sequential(
             nn.Linear(self._conv_out_flattened_size + obs_space_drone_state.shape[0], self.cfg.embed_dim),
-            nn.BatchNorm1d(self.cfg.embed_dim),
+            norm_layer,
             nn.Tanh()
         )
 
@@ -195,48 +200,51 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             state: List[TensorType],
             seq_lens: TensorType,
     ) -> (TensorType, List[TensorType]):
+        # Choose the appropriate context manager based on your config flag.
+        cm = torch.autograd.set_detect_anomaly(True) if self.cfg.use_anomaly_detection else contextlib.nullcontext()
+        with cm:
 
-        batch_size = input_dict["obs"]["images"].shape[0]
+            batch_size = input_dict["obs"]["images"].shape[0]
 
-        obs_dict = input_dict["obs"]
-        stacked_images = obs_dict["images"]  # shape: (batch_size, 4, 84, 84)
-        if self.cfg.ru_debugging:
-            assert stacked_images.dtype == torch.float32, f"stacked_images.dtype: {stacked_images.dtype}"
-        stacked_images /= 255.0  # Normalize the images
-        drone_state = obs_dict["drone_state"]  # shape: (batch_size, 10)
+            obs_dict = input_dict["obs"]
+            stacked_images = obs_dict["images"]  # shape: (batch_size, 4, 84, 84)
+            if self.cfg.ru_debugging:
+                assert stacked_images.dtype == torch.float32, f"stacked_images.dtype: {stacked_images.dtype}"
+            stacked_images /= 255.0  # Normalize the images
+            drone_state = obs_dict["drone_state"]  # shape: (batch_size, 10)
 
-        # (1) Encoder forward
-        enc_out = self.encoder(stacked_images)               # (batch_size, C, H, W)
-        enc_out_flattened = enc_out.view(enc_out.shape[0], -1)                     # (batch_size, C'*H'*W'==conv_out_dim)
-        if self.cfg.ru_debugging:
-            assert enc_out_flattened.ndim == 2, f"Encoder output enc_out_flattened: Not a 2D tensor!!\n  enc_out.shape: {enc_out_flattened.shape}"
-        enc_out_flattened_cat = torch.cat([enc_out_flattened, drone_state], dim=1)  # (batch_size, conv_out_dim + 10)
+            # (1) Encoder forward
+            enc_out = self.encoder(stacked_images)               # (batch_size, C, H, W)
+            enc_out_flattened = enc_out.view(enc_out.shape[0], -1)                     # (batch_size, C'*H'*W'==conv_out_dim)
+            if self.cfg.ru_debugging:
+                assert enc_out_flattened.ndim == 2, f"Encoder output enc_out_flattened: Not a 2D tensor!!\n  enc_out.shape: {enc_out_flattened.shape}"
+            enc_out_flattened_cat = torch.cat([enc_out_flattened, drone_state], dim=1)  # (batch_size, conv_out_dim + 10)
 
-        # (2) Embedding
-        x_embd = self.embedding(enc_out_flattened_cat)                              # (batch_size, embed_dim)
+            # (2) Embedding
+            x_embd = self.embedding(enc_out_flattened_cat)                              # (batch_size, embed_dim)
 
-        # (3) Policy (actor) forward
-        logits = self.policy(x_embd)                            # (batch_size, num_outputs)
+            # (3) Policy (actor) forward
+            logits = self.policy(x_embd)                            # (batch_size, num_outputs)
 
-        # (4) Value (critic) forward
-        self._value_out = self.critic(x_embd)             # (batch_size, 1)
+            # (4) Value (critic) forward
+            self._value_out = self.critic(x_embd)             # (batch_size, 1)
 
-        # (5) Check for NaN/Inf in the output
-        if self.cfg.ru_debugging and batch_size == 512:
-            if torch.isnan(logits).any():
-                print(f"@@@@@@@@@@@@@@@@@ stacked_images (nan): {torch.isnan(stacked_images).sum()}")
-                print(f"@@@@@@@@@@@@@@@@@ drone_state (nan): {torch.isnan(drone_state).sum()}")
-                print(f"@@@@@@@@@@@@@@@@@ enc_out (nan): {torch.isnan(enc_out).sum()}")
-                print(f"@@@@@@@@@@@@@@@@@ enc_out_flattened (nan): {torch.isnan(enc_out_flattened).sum()}")
-                print(f"@@@@@@@@@@@@@@@@@ enc_out_flattened_cat (nan): {torch.isnan(enc_out_flattened_cat).sum()}")
-                print(f"@@@@@@@@@@@@@@@@@ x_embd (nan): {torch.isnan(x_embd).sum()}")
-                print(f"@@@@@@@@@@@@@@@@@ logits (nan): {torch.isnan(logits).sum(axis=0)}")
-                print(f"@@@@@@@@@@@@@@@@@ self._value_out (nan): {torch.isnan(self._value_out).sum()}")
-                print("logits에서 NaN 발생!")
-            if torch.isinf(logits).any():
-                raise ValueError("logits에서 Inf 발생!")
+            # (5) Check for NaN/Inf in the output
+            if self.cfg.ru_debugging and batch_size == 512:
+                if torch.isnan(logits).any():
+                    print(f"@@@@@@@@@@@@@@@@@ stacked_images (nan): {torch.isnan(stacked_images).sum()}")
+                    print(f"@@@@@@@@@@@@@@@@@ drone_state (nan): {torch.isnan(drone_state).sum()}")
+                    print(f"@@@@@@@@@@@@@@@@@ enc_out (nan): {torch.isnan(enc_out).sum()}")
+                    print(f"@@@@@@@@@@@@@@@@@ enc_out_flattened (nan): {torch.isnan(enc_out_flattened).sum()}")
+                    print(f"@@@@@@@@@@@@@@@@@ enc_out_flattened_cat (nan): {torch.isnan(enc_out_flattened_cat).sum()}")
+                    print(f"@@@@@@@@@@@@@@@@@ x_embd (nan): {torch.isnan(x_embd).sum()}")
+                    print(f"@@@@@@@@@@@@@@@@@ logits (nan): {torch.isnan(logits).sum(axis=0)}")
+                    print(f"@@@@@@@@@@@@@@@@@ self._value_out (nan): {torch.isnan(self._value_out).sum()}")
+                    print("logits에서 NaN 발생!")
+                if torch.isinf(logits).any():
+                    raise ValueError("logits에서 Inf 발생!")
 
-        return logits, state
+            return logits, state
 
     def value_function(self) -> TensorType:
         """
