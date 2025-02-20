@@ -116,6 +116,7 @@ if __name__ == "__main__":
     my_config_instance = VisionLanderPPOConfig()
     my_config_instance.ru_debugging = True
     my_config_instance.use_layer_norm = True
+    my_config_instance.use_anomaly_detection = True
     custom_model_config = {
         "config_instance": my_config_instance,
         "config_in_dict": my_config_instance.to_dict(),
