@@ -201,9 +201,9 @@ class BaseAviary(gym.Env):
                 ## Set the camera parameters to save frames in DIRECT mode
                 self.VID_WIDTH=int(640)
                 self.VID_HEIGHT=int(480)
-                self.FRAME_PER_SEC = 24
+                self.FRAME_PER_SEC = 30
                 self.CAPTURE_FREQ = int(self.SIM_FREQ/self.FRAME_PER_SEC)
-                self.CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=1.4,
+                self.CAM_VIEW = p.computeViewMatrixFromYawPitchRoll(distance=2.0,
                                                                     yaw= 0,
                                                                     pitch=-12,
                                                                     roll=0,
@@ -211,7 +211,7 @@ class BaseAviary(gym.Env):
                                                                     upAxisIndex=2,
                                                                     physicsClientId=self.CLIENT
                                                                     )
-                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=20.0,
+                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=80.0,
                                                             aspect=self.VID_WIDTH/self.VID_HEIGHT,
                                                             nearVal=0.1,
                                                             farVal=1000.0
@@ -286,10 +286,18 @@ class BaseAviary(gym.Env):
         """
         ## Save PNG video frames if RECORD=True and GUI=False
         if self.RECORD and not self.GUI and self.step_counter%self.CAPTURE_FREQ == 0:
+            temp_cam_view = p.computeViewMatrixFromYawPitchRoll(distance=1.0,
+                                                                yaw= 0,
+                                                                pitch=-35,
+                                                                roll=0,
+                                                                cameraTargetPosition=self.pos[0],
+                                                                upAxisIndex=2,
+                                                                physicsClientId=self.CLIENT
+                                                                )
             [w, h, rgb, dep, seg] = p.getCameraImage(width=self.VID_WIDTH,
                                                      height=self.VID_HEIGHT,
                                                      shadow=1,
-                                                     viewMatrix=self.CAM_VIEW,
+                                                     viewMatrix=temp_cam_view,
                                                      projectionMatrix=self.CAM_PRO,
                                                      renderer=p.ER_TINY_RENDERER,
                                                      flags=p.ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX,
