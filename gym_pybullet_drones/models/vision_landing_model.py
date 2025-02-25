@@ -18,6 +18,7 @@ class VisionLanderPPOConfig:
     ru_debugging: bool = False
     is_shared_net: bool= False
     use_anomaly_detection: bool = False
+    eval_mode: bool = False
     # Encoder configs
     encoder_channels: List[int] = field(default_factory=lambda: [32, 32, 32, 32])
     kernel_sizes: List[int] = field(default_factory=lambda: [3, 3, 3, 3])
@@ -31,13 +32,17 @@ class VisionLanderPPOConfig:
     # Add more if you need more model config
 
     def __post_init__(self):
+        assert isinstance(self.ru_debugging, bool), f"ru_debugging({type(self.ru_debugging)}) 타입이 bool이어야 합니다!"
+        assert isinstance(self.is_shared_net, bool), f"is_shared_net({type(self.is_shared_net)}) 타입이 bool이어야 합니다!"
+        assert isinstance(self.use_anomaly_detection, bool), f"use_anomaly_detection({type(self.use_anomaly_detection)}) 타입이 bool이어야 합니다!"
+        assert isinstance(self.eval_mode, bool), f"eval_mode({type(self.eval_mode)}) 타입이 bool이어야 합니다!"
         # (1) encoder 관련 validation
         # (1-1) encoder_channels, kernel_sizes, strides 타입 체크: List[int]
         if not all(isinstance(x, list) for x in [self.encoder_channels, self.kernel_sizes, self.strides]):
             raise ValueError(
                 f"encoder_channels({type(self.encoder_channels)}), "
                 f"kernel_sizes({type(self.kernel_sizes)}), strides({type(self.strides)}) "
-                "타입이 모두 List[int]여야 합니다!")
+                "All types of encoder_channels, kernel_sizes, strides must be List[int]!")
         # (1-2) encoder_channels, kernel_sizes, strides 의 길이가 0보다 큰지
         if not all(len(x) > 0 for x in [self.encoder_channels, self.kernel_sizes, self.strides]):
             raise ValueError(
@@ -209,7 +214,12 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             obs_dict = input_dict["obs"]
             stacked_images = obs_dict["images"]  # shape: (batch_size, 4, 84, 84)
             if self.cfg.ru_debugging:
-                assert stacked_images.dtype == torch.float32, f"stacked_images.dtype: {stacked_images.dtype}"
+                if self.cfg.eval_mode:
+                    assert stacked_images.dtype in [torch.uint8, torch.float32], f"stacked_images.dtype: {stacked_images.dtype}"
+                    # Type casting: not mandatory, but for readability (i.e. it's automatically done when normalized)
+                    stacked_images = stacked_images.float() if stacked_images.dtype == torch.uint8 else stacked_images
+                else:
+                    assert stacked_images.dtype == torch.float32, f"stacked_images.dtype: {stacked_images.dtype}"
             stacked_images /= 255.0  # Normalize the images
             drone_state = obs_dict["drone_state"]  # shape: (batch_size, 10)
 
@@ -232,14 +242,14 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             # (5) Check for NaN/Inf in the output
             if self.cfg.ru_debugging and batch_size == 512:
                 if torch.isnan(logits).any():
-                    print(f"@@@@@@@@@@@@@@@@@ stacked_images (nan): {torch.isnan(stacked_images).sum()}")
-                    print(f"@@@@@@@@@@@@@@@@@ drone_state (nan): {torch.isnan(drone_state).sum()}")
-                    print(f"@@@@@@@@@@@@@@@@@ enc_out (nan): {torch.isnan(enc_out).sum()}")
-                    print(f"@@@@@@@@@@@@@@@@@ enc_out_flattened (nan): {torch.isnan(enc_out_flattened).sum()}")
-                    print(f"@@@@@@@@@@@@@@@@@ enc_out_flattened_cat (nan): {torch.isnan(enc_out_flattened_cat).sum()}")
-                    print(f"@@@@@@@@@@@@@@@@@ x_embd (nan): {torch.isnan(x_embd).sum()}")
-                    print(f"@@@@@@@@@@@@@@@@@ logits (nan): {torch.isnan(logits).sum(axis=0)}")
-                    print(f"@@@@@@@@@@@@@@@@@ self._value_out (nan): {torch.isnan(self._value_out).sum()}")
+                    print(f"@@@@@@@@@@@@@ stacked_images (nan): {torch.isnan(stacked_images).sum()}")
+                    print(f"@@@@@@@@@@@@@ drone_state (nan): {torch.isnan(drone_state).sum()}")
+                    print(f"@@@@@@@@@@@@@ enc_out (nan): {torch.isnan(enc_out).sum()}")
+                    print(f"@@@@@@@@@@@@@ enc_out_flattened (nan): {torch.isnan(enc_out_flattened).sum()}")
+                    print(f"@@@@@@@@@@@@@ enc_out_flattened_cat (nan): {torch.isnan(enc_out_flattened_cat).sum()}")
+                    print(f"@@@@@@@@@@@@@ x_embd (nan): {torch.isnan(x_embd).sum()}")
+                    print(f"@@@@@@@@@@@@@ logits (nan): {torch.isnan(logits).sum(axis=0)}")
+                    print(f"@@@@@@@@@@@@@ self._value_out (nan): {torch.isnan(self._value_out).sum()}")
                     print("logits에서 NaN 발생!")
                 if torch.isinf(logits).any():
                     raise ValueError("logits에서 Inf 발생!")
