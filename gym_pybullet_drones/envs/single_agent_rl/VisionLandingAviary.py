@@ -60,23 +60,28 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  initial_xyzs=None,
                  initial_rpys=None,
                  physics: Physics = Physics.PYB,
-                 freq: int = 240,
+                 freq: int = 300,
                  aggregate_phy_steps: int = 10,
                  gui: bool = False,
                  record: bool = False,
                  obs: ObservationType = ObservationType.BW,
                  act: ActionType = ActionType.VEL,
-                 channel_first: bool = True,     # nn.Conv2d() 사용시 channel_first=True
-                 stack_size: int = 4,            # 이미지 프레임 stack 개수
-                 fov: float = 60.0,              # drone 카메라 시야각 (degree)
+                 channel_first: bool = True,     # nn.Conv2d(): must: channel_first=True
+                 stack_size: int = 4,            # Number of frames to stack
+                 fov: float = 80.0,              # Field of view for the drone camera (in degrees!)
                  img_res: np.ndarray = np.array([84, 84]),  # original: np.array([64, 48])
-                 img_fps: int = 24,
-                 episode_len_sec: float = 5.0,   # 에피소드 길이 (초)
+                 img_fps: int = 30,
+                 episode_len_sec: float = 30.0,   # 에피소드 길이 (초)
                  include_drone_state: bool = True,
                  difficulty: int = 4,
+                 curriculum_configs: dict = None,
+                 # **kwargs, # Enable this ONLY IF you need additional arguments as a workaround (e.g. curriculum plans)
                  ):
         # Curriculum learning setting
         self.difficulty = difficulty
+        if curriculum_configs is not None:
+            assert "metric" in curriculum_configs, "Metric should be provided in the curriculum_configs."
+            assert "plans" in curriculum_configs, "Plans should be provided in the curriculum_configs."
 
         assert include_drone_state, "Currently, include_drone_state == False is not supported."
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
@@ -95,7 +100,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.pad_height = 0.2725  # 착륙 패드 높이 (착륙후 drone pos 는 이거 보다 높음)
 
         # 드론 초기화
-        initial_xyzs, initial_rpys = self._reset_drone(initial_xyzs, initial_rpys)
+        self.user_xyz = initial_xyzs
+        self.user_rpy = initial_rpys
+        initial_xyzs, initial_rpys = self._get_random_drone_pose(self.user_xyz, self.user_rpy)
         self.last_action_vel = None
 
         # 상위 클래스 초기화: 이 호출 이후에 self.IMG_RES 등 필요한 속성이 생성됨
@@ -128,7 +135,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # 버퍼를 채워 넣음 (원하는 경우 dummy_frame.copy() 사용)
         self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
 
-    def _reset_drone(self, initial_xyzs=None, initial_rpys=None):
+    def _get_random_drone_pose(self, initial_xyzs=None, initial_rpys=None):
         """
         드론 초기화:
           - 드론 높이는 약 10.0으로 설정
@@ -139,22 +146,26 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # _resetLandingPad()가 먼저 호출되어 pad의 위치가 초기화되어 있다고 가정
         pad_xy = self.landing_pad_base_start_pos[:2]  # 패드의 x, y 좌표
 
-        # 패드 위치를 기준으로 반경 3.0m 이내의 랜덤 오프셋 생성
-        r = np.random.uniform(0, 3.0)
-        theta = np.random.uniform(0, 2*np.pi)
-        offset_x = r * np.cos(theta)
-        offset_y = r * np.sin(theta)
-        drone_x = pad_xy[0] + offset_x
-        drone_y = pad_xy[1] + offset_y
-        drone_z = 10.0  # 고도 10.0 근처
+        # 패드 위치를 기준으로 반경 'r'm 이내의 랜덤 오프셋 생성 (균일하게 생성하려면 r <- sqrt(r) 사용; 선형 r은 가운데로 더 몰림)
+        if initial_xyzs is None:
+            r = np.random.uniform(0, 3.0)
+            theta = np.random.uniform(0, 2*np.pi)
+            offset_x = r * np.cos(theta)
+            offset_y = r * np.sin(theta)
+            drone_x = pad_xy[0] + offset_x
+            drone_y = pad_xy[1] + offset_y
+            drone_z = 10.0  # 고도 10.0 근처
+        else:
+            drone_x, drone_y, drone_z = initial_xyzs[0]
 
         initial_xyzs = np.array([[drone_x, drone_y, drone_z]])
 
-        # roll, pitch: ±15° 범위, yaw: [-pi, pi] 범위
-        roll = np.deg2rad(np.random.uniform(-15, 15))
-        pitch = np.deg2rad(np.random.uniform(-15, 15))
-        yaw = np.random.uniform(-np.pi, np.pi)
-        initial_rpys = np.array([[roll, pitch, yaw]])
+        if initial_rpys is None:
+            # roll, pitch: ±15° 범위, yaw: [-pi, pi] 범위
+            roll = np.deg2rad(np.random.uniform(-15, 15))
+            pitch = np.deg2rad(np.random.uniform(-15, 15))
+            yaw = np.random.uniform(-np.pi, np.pi)
+            initial_rpys = np.array([[roll, pitch, yaw]])
 
         return initial_xyzs, initial_rpys
 
@@ -166,9 +177,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 패드의 roll, pitch는 0, yaw는 임의 생성
           - 패드의 초기 속도(speed)는 0.5 ~ 2.0 범위에서 임의 생성 (에피소드 동안 일정)
         """
-        # 패드의 위치: x, y는 [-1, 1] 범위, z=0.0
-        pad_x = np.random.uniform(-1.0, 1.0)
-        pad_y = np.random.uniform(-1.0, 1.0)
+        # 패드의 위치: x, y는 [-0.5, 0.5] 범위, z=0.0
+        pad_x = np.random.uniform(-0.5, 0.5)
+        pad_y = np.random.uniform(-0.5, 0.5)
         pad_z = 0.0
         self.landing_pad_base_start_pos = np.array([pad_x, pad_y, pad_z])
         self.landing_pad_base_pos = self.landing_pad_base_start_pos.tolist()
@@ -178,8 +189,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.landing_pad_yaw = pad_yaw  # 이후 업데이트에서 사용
         self.landing_pad_orientation = p.getQuaternionFromEuler([0, 0, pad_yaw])
 
-        # 패드의 속도: 0.5 ~ 2.0 m/s 범위에서 임의 생성
-        self.landing_pad_speed = np.random.uniform(0.5, 2.0)
+        # 패드의 속도: 0.5 ~ 1.0 m/s 범위에서 임의 생성
+        self.landing_pad_speed = np.random.uniform(0.5, 1.0)
 
     def _addObstacles(self):
         """
@@ -188,15 +199,15 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         여기서는 착륙 패드를 'parsed_pad.urdf' 파일을 가져옴. 내부에는 base1.obj를 참고하고, 그 내부에는 base1.mtl을 참고하며,
         그 내부에는 입힐 texture를 image 파일을 지정함. 모두 self.assets_path 내에 있어야 함. 복작복작복잡하네.
         Total Joints: 9 (car)
-        Link Index: 0, Name: main_body,              Position: (1.0, 0.0, 0.16)
-        Link Index: 1, Name: rear_bar_link,          Position: (0.84, 0, 0.06)
-        Link Index: 2, Name: back_left_wheel_link,   Position: (0.84, 0.1, 0.06)
-        Link Index: 3, Name: back_right_wheel_link,  Position: (0.84, -0.1, 0.06)
-        Link Index: 4, Name: bar_link,               Position: (1.16, 0, 0.06)
-        Link Index: 5, Name: front_left_wheel_link,  Position: (1.16, -0.1, 0.06)
-        Link Index: 6, Name: front_right_wheel_link, Position: (1.16, 0.1, 0.06)
-        Link Index: 7, Name: holder,                 Position: (1.0, 0.0, 0.235)
-        Link Index: 8, Name: heliport_base,          Position: (1.0, 0.0, 0.2725)
+        Link Idx: 0, Name: main_body,              Position: (1.0, 0.0, 0.16)
+        Link Idx: 1, Name: rear_bar_link,          Position: (0.84, 0, 0.06)
+        Link Idx: 2, Name: back_left_wheel_link,   Position: (0.84, 0.1, 0.06)
+        Link Idx: 3, Name: back_right_wheel_link,  Position: (0.84, -0.1, 0.06)
+        Link Idx: 4, Name: bar_link,               Position: (1.16, 0, 0.06)
+        Link Idx: 5, Name: front_left_wheel_link,  Position: (1.16, -0.1, 0.06)
+        Link Idx: 6, Name: front_right_wheel_link, Position: (1.16, 0.1, 0.06)
+        Link Idx: 7, Name: holder,                 Position: (1.0, 0.0, 0.235)
+        Link Idx: 8, Name: heliport_base,          Position: (1.0, 0.0, 0.2725)
 
         Helipad: visual shape: (0.675, 0.675, 0), collision shape: (0.5, 0.5, 0)
         """
@@ -210,7 +221,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
     def _updateLandingPad(self):
         """
-        매 스텝마다 패드의 위치를 업데이트:
+        Updates pad position every step.:
           - 패드가 초기화된 yaw 방향(heading)으로 일정 속도(self.landing_pad_speed)로 직진.
         """
         dt = self.TIMESTEP  # 한 스텝의 시간 간격
@@ -250,7 +261,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.last_action_vel = np.zeros(3)  # 마지막으로 적용된 속도 명령
 
         # 드론 초기 위치/자세를 랜덤으로 재설정
-        initial_xyzs, initial_rpys = self._reset_drone()
+        initial_xyzs, initial_rpys = self._get_random_drone_pose(self.user_xyz, self.user_rpy)
         self.INIT_XYZS = initial_xyzs
         self.INIT_RPYS = initial_rpys
 
@@ -435,18 +446,18 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
     def _curriculum_v1_rewards(self):
         """
-        커리큘럼 난이도에 따라 보상 함수를 다르게 구성합니다.
-         - Difficulty 1: visibility 보상만 사용
-         - Difficulty 2: visibility와 landing/crashing 보상 사용. 다만 landing/crashing 보상에서 음수는 0으로 처리
-         - Difficulty 3: visibility와 landing/crashing 보상 사용 (음수 보상 적용)
-         - Difficulty 4: vanilla reward (모든 보상 요소 사용)
+        Curriculum v1 - difficulty 1–4 as follows:
+          - Difficulty 1: Visibility reward only
+          - Difficulty 2: visibility + landing/crashing (no crash penalty i.e., no negative reward)
+          - Difficulty 3: visibility와 landing/crashing (crash penalty applied)
+          - Difficulty 4: vanilla reward (use all reward functions)
         """
         if self.difficulty == 1:
-            # 오직 visibility 보상만 사용
+            # visibility only
             return self._compute_reward_visibility()
 
         elif self.difficulty == 2:
-            # visibility + landing/crashing (음수 보상 무시)
+            # visibility + landing/crashing (no negative reward; i.e. no crash penalty)
             r_vis = self._compute_reward_visibility()
             if r_vis < 0:
                 return r_vis  # 시야가 확보되지 않은 경우는 그대로 음수 반환
@@ -520,16 +531,16 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         drone_z_vel = self.vel[0, 2]  # z velocity
 
-        # 너무 빠르게 움직이는 경우
+        # (1) Move too fast
         if abs(drone_z_vel) / self.SPEED_LIMIT[2] > 1.1:
             return 0.0
-        # 상승 하는 경우
+        # (2) Ascending, which isn't desired
         if drone_z_vel > 0:
             return -0.1
-        # 안전하게 하강하는 경우
+        # (3) Safe descending: max reward at the desired z-velocity
         if desired_z_vel < drone_z_vel <= 0:
             return (alpha ** (drone_z_vel / desired_z_vel) - 1) / (alpha - 1)
-        # 다소 빠르게 하강하는 경우
+        # (4) Descending faster than desired
         elif drone_z_vel <= desired_z_vel:
             return -0.01
         else:
@@ -548,11 +559,11 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                 return 0.0
             else:
                 return -1.0
-        else:  # Not landed or crashed
+        else:  # Hasn't landed or crashed yet
             return 0.0
 
     def _compute_reward_visibility(self):
-        """Returns positive reward if LOS; otherwise, negative reward."""
+        """Returns non-negative reward if LOS; otherwise, negative reward."""
         pad_position = self._get_pad_center_position()  # numpy (3,)
         if self._check_los(pad_position):
             return 0.0
@@ -562,9 +573,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
     def _check_los(self, pad_position):
         """
-        드론의 카메라 FOV 안에 pad_position(타겟)이 들어왔는지 여부를 True/False로 반환.
+        Returns True if the drone has line-of-sight to the pad; otherwise, False.
         """
-        # 드론 위치, 쿼터니언 가져오기
         drone_pos = self.pos[0, :]          # shape: (3,)
         drone_quat = self.quat[0, :]        # shape: (4,) 가정: (x, y, z, w) 또는 (w, x, y, z)
 
@@ -624,14 +634,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         return False
 
     def _computeInfo(self):
-        """
-        추가 정보 반환:
-          - 드론의 현재 위치, 착륙 패드의 위치, 두 대상 간의 수평 거리를 포함
-        """
         info = {}
-        # info['drone_pos'] = self.pos[0]
-        # info['landing_pad_base_pos'] = self.landing_pad_base_pos
-        # info['horizontal_distance'] = np.linalg.norm(np.array(self.pos[0][:2]) - np.array(self.landing_pad_base_pos[:2]))
         return info
 
     def step(self, action):
