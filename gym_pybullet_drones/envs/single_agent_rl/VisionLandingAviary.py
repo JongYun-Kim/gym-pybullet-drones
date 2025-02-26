@@ -55,6 +55,7 @@ from scipy.spatial.transform import Rotation
 from gym_pybullet_drones.utils.utils_geometry import project_point_on_pad_plane, inside_pad_box, order_points_convex_polygon, polygons_intersect_2d, line_plane_intersection
 from gym_pybullet_drones.utils.utils_ffmpeg import convert_images_to_video
 
+
 class VisionLandingAviary(BaseSingleAgentAviary):
     def __init__(self,
                  drone_model: DroneModel = DroneModel.CF2X,
@@ -423,7 +424,12 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             # scale it to the desired velocity in m/s
             scaled_action = np.clip(action, -1, 1)  # 혹시 모를 안전장치
             self.last_action_vel = scaled_action
-            target_vel = self.SPEED_LIMIT * scaled_action
+            target_vel_input = self.SPEED_LIMIT * scaled_action
+            curr_vel = self.vel[0, :]
+
+            # # Blend the target velocity input with the current velocity
+            # # This is to prevent the drone from stopping abruptly; but not converging sometimes...
+            target_vel = 0.15 * target_vel_input + 0.85 * curr_vel
 
             state = self._getDroneStateVector(0)
             rpm, _, _ = self.ctrl.computeControl(
@@ -439,7 +445,6 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             return rpm
         elif self.ACT_TYPE == ActionType.RPM:
             return np.array(self.HOVER_RPM * (1+0.05*action))
-
         elif self.ACT_TYPE in [ActionType.TUN, ActionType.PID, ActionType.DYN, ActionType.ONE_D_RPM, ActionType.ONE_D_DYN, ActionType.ONE_D_PID]:
             raise NotImplementedError("Action type not implemented yet.")
         else:
