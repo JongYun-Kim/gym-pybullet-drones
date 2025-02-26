@@ -26,7 +26,7 @@ vision 기반 드론 자동 착륙 학습을 위한 Gym 환경의 구현
 # TODOs:
 # - [o] rgb to grey scale
 # - [o] Check observation stack interval
-#   - 24 Hz 로 이미지 촬영; 4 프레임 크기의 buffer를 새로운 프레임으로 업데이트
+#   - 30 Hz 로 이미지 촬영; 4 프레임 크기의 buffer를 새로운 프레임으로 업데이트
 #   - aggregate_phy_steps=10 을 하면 freq=240Hz에서 알아서 매 observation 마다 RL-action 을 할 기회를 줌 (빠른 simulation)
 # - [o] Replace the reward function with Pawel's
 # - [o] Check done condition
@@ -52,6 +52,7 @@ from gym_pybullet_drones.envs.BaseAviary import ImageType  # onboard 이미지 �
 from gym_pybullet_drones.utils.utils import rgb2gray
 import subprocess
 from scipy.spatial.transform import Rotation
+from gym_pybullet_drones.utils.utils_geometry import project_point_on_pad_plane, inside_pad_box, order_points_convex_polygon, polygons_intersect_2d, line_plane_intersection
 
 
 class VisionLandingAviary(BaseSingleAgentAviary):
@@ -77,7 +78,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  curriculum_configs: dict = None,
                  # **kwargs, # Enable this ONLY IF you need additional arguments as a workaround (e.g. curriculum plans)
                  ):
-        # Curriculum learning setting
+        # Curriculum learning settings
         self.difficulty = difficulty
         if curriculum_configs is not None:
             assert "metric" in curriculum_configs, "Metric should be provided in the curriculum_configs."
@@ -148,7 +149,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # 패드 위치를 기준으로 반경 'r'm 이내의 랜덤 오프셋 생성 (균일하게 생성하려면 r <- sqrt(r) 사용; 선형 r은 가운데로 더 몰림)
         if initial_xyzs is None:
-            r = np.random.uniform(0, 3.0)
+            r = np.random.uniform(0, 1.0)
             theta = np.random.uniform(0, 2*np.pi)
             offset_x = r * np.cos(theta)
             offset_y = r * np.sin(theta)
@@ -162,8 +163,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         if initial_rpys is None:
             # roll, pitch: ±15° 범위, yaw: [-pi, pi] 범위
-            roll = np.deg2rad(np.random.uniform(-15, 15))
-            pitch = np.deg2rad(np.random.uniform(-15, 15))
+            roll = np.deg2rad(np.random.uniform(-1, 1))
+            pitch = np.deg2rad(np.random.uniform(-1, 1))
             yaw = np.random.uniform(-np.pi, np.pi)
             initial_rpys = np.array([[roll, pitch, yaw]])
 
@@ -189,12 +190,12 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         self.landing_pad_yaw = pad_yaw  # 이후 업데이트에서 사용
         self.landing_pad_orientation = p.getQuaternionFromEuler([0, 0, pad_yaw])
 
-        # 패드의 속도: 0.5 ~ 1.0 m/s 범위에서 임의 생성
-        self.landing_pad_speed = np.random.uniform(0.5, 1.0)
+        # 패드의 속도: 0.0 ~ 1.0 m/s 범위에서 임의 생성
+        self.landing_pad_speed = np.random.uniform(0.0, 1.0)
 
     def _addObstacles(self):
         """
-        BaseAviary의 _addObstacles()를 오버라이드하여,
+        Overrides _addObstacles() in BaseAviary:,
         움직이는 착륙 패드만 환경에 추가.
         여기서는 착륙 패드를 'parsed_pad.urdf' 파일을 가져옴. 내부에는 base1.obj를 참고하고, 그 내부에는 base1.mtl을 참고하며,
         그 내부에는 입힐 texture를 image 파일을 지정함. 모두 self.assets_path 내에 있어야 함. 복작복작복잡하네.
@@ -565,10 +566,12 @@ class VisionLandingAviary(BaseSingleAgentAviary):
     def _compute_reward_visibility(self):
         """Returns non-negative reward if LOS; otherwise, negative reward."""
         pad_position = self._get_pad_center_position()  # numpy (3,)
-        if self._check_los(pad_position):
+        # if self._check_los(pad_position):
+        # if self._check_los_segmentation():
+        if self._check_los_camera_polygon_vs_pad_box():
             return 0.0
         else:
-            # print("    [VisionLandingAviary] env: Out of LOS!")
+            # print("  !!  [VisionLandingAviary] env: Out of LOS!")
             return -0.01
 
     def _check_los(self, pad_position):
@@ -614,6 +617,130 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             return True
         else:
             return False
+
+    def _check_los_segmentation(self):
+        """
+        세그멘테이션을 활용하여 착륙 패드(landing_pad_id)의 link가
+        카메라 프레임 안에 하나라도 찍혀 있으면 LOS=True 반환
+        """
+        # NOT TESTED YET
+        # 세그멘테이션 사용해서 이미지 받아오기
+        # segmentation=True 로 호출해야 ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX 모드로 동작합니다.
+        _, _, seg = self._getDroneImages(nth_drone=0, segmentation=True)
+
+        # seg 배열의 각 픽셀에는 objectUniqueId와 linkIndex가 비트로 encoding되어 있음
+        # 공식 문서에 따르면, segPixelValue = objectUniqueId << 24 + linkIndex << 16 + ...
+        # 여기서 objectUniqueId를 얻으려면 (segPixelValue & ((1 << 24) - 1)) >> 16 이런 식으로 bit마스크를 해주어야 합니다.
+
+        # 하지만 착륙 패드의 link들도 구별하려면, linkIndex까지 확인해야 합니다.
+        # pad_id = self.landing_pad_id
+        pad_uid = self.landing_pad_id  # 착륙 패드의 유니크 ID
+
+        height, width = seg.shape[:2]
+        for y in range(height):
+            for x in range(width):
+                pix = seg[y, x]
+                # 오브젝트 ID
+                object_uid = (pix & ((1 << 24) - 1)) >> 16
+                if object_uid == pad_uid:
+                    # 착륙 패드의 어느 link든 한 픽셀이라도 카메라에 찍혔다면 LOS = True
+                    return True
+
+        return False
+
+    def _check_los_camera_polygon_vs_pad_box(self):
+        """
+        카메라 중앙 벡터 & 코너 벡터를 패드 평면으로 연장해 얻은 다각형과
+        패드의 충돌 박스(0.5×0.5) 사각형이 2D 평면에서 교차하는지 확인.
+        교차(또는 포함)하면 LOS가 있다고 봄.
+        """
+        # [1] 드론(카메라) 위치·방향 구하기
+        drone_pos = self.pos[0]           # shape = (3,)
+        drone_quat = self.quat[0]         # shape = (4,) (x, y, z, w)라 가정
+        rot_world_to_drone = Rotation.from_quat(drone_quat).inv()
+
+        # [2] 패드 평면의 중심점, 쿼터니언, 법선(normal) 등 구하기
+        pad_center_3d = self._get_pad_center_position()                # (3,)
+        pad_quat = self._get_pad_center_orientation(quaternion=True)   # (x, y, z, w)
+        R_pad = np.array(p.getMatrixFromQuaternion(pad_quat)).reshape(3, 3)
+        # 패드 평면의 법선(로컬 z축을 회전한 벡터라고 가정)
+        #  - pad 로컬에서 z축은 (0,0,1)이라 가정 → 실제 urdf 상 어떻게 정의됐는지 확인 필요
+        pad_normal = R_pad @ np.array([0, 0, 1])   # shape=(3,)
+
+        # [3] 카메라 코너(및 중앙) 방향 정의 (드론 바디 기준)
+        # Ex) 'center': (0, 0, -1),
+        #     '4 corners': (±1, ±1, -1) 형태 등을 사용. (i.e. fov=90)
+        # self.fov: vertical FOV (degrees)
+        # self.IMG_RES: np.array([w, h])
+        fov_margin_deg = 2.0  # 카메라 이미지보다 조금 더 안쪽으로 들어오게 계산
+        fov_rad = np.radians(self.fov - fov_margin_deg)
+        aspect_ratio = self.IMG_RES[0] / self.IMG_RES[1]
+        v = np.tan(fov_rad / 2.0)  # 수직 한계 (top/bottom)
+        h = aspect_ratio * v       # 수평 한계 (left/right)
+        #
+        dirs_body = [
+            np.array([0., 0., -1.]),  # center
+            np.array([ h,  v, -1.]),  # top-right
+            np.array([-h,  v, -1.]),  # top-left
+            np.array([-h, -v, -1.]),  # bottom-left
+            np.array([ h, -v, -1.]),  # bottom-right
+        ]
+
+        # Normalization
+        dirs_body = [d / np.linalg.norm(d) for d in dirs_body]
+
+        # [4] 각 벡터를 월드로 변환 + 평면 교차점 찾기
+        intersection_points = []
+        for d_body in dirs_body:
+            d_world = rot_world_to_drone.inv().apply(d_body)  # (3,)
+            pt = line_plane_intersection(
+                line_point=drone_pos,
+                line_dir=d_world,
+                plane_point=pad_center_3d,
+                plane_normal=pad_normal
+            )
+            intersection_points.append(pt)
+
+        # 교차점 0번은 "중앙" 교차점 A, 나머지 4개가 C, D, E, F에 해당
+        A = intersection_points[0]  # 중심
+        corners_3d = intersection_points[1:]  # 4개 모서리
+
+        # [5] 먼저 "중심점 A"가 패드 0.5×0.5 박스 안에 있으면 LOS=True
+        #   -> 패드 평면 2D 좌표로 투영
+        if A is not None:
+            A_2d = project_point_on_pad_plane(A, pad_center_3d, R_pad)  # 아래에서 구현
+            if inside_pad_box(A_2d, half_size=0.25):
+                return True
+
+        # [6] corners_3d 중 None 있으면(카메라 뒤?), 유효한 점만 사용
+        valid_corners_3d = [c for c in corners_3d if c is not None]
+        if len(valid_corners_3d) == 0:
+            # 카메라 frustum과 패드 평면이 교차X → 볼 수 없음
+            return False
+
+        # [7] 유효한 코너를 패드 평면 2D로 투영 (x,y 좌표)
+        corners_2d = [project_point_on_pad_plane(c, pad_center_3d, R_pad)
+                      for c in valid_corners_3d]
+
+        # "카메라 폴리곤"이라 할 수 있는 2D 점들 corners_2d
+        # → 보통 (C->D->E->F) 순으로 이어야 하지만
+        #   정렬되지 않았을 수 있으니, 볼록다각형 정렬이 필요함
+        #   (convex hull을 취하거나, 시계/반시계로 소팅 등)
+        cam_poly_2d = order_points_convex_polygon(corners_2d)
+
+        # [8] 패드 충돌박스도 2D 사각형 (±0.25, ±0.25)
+        pad_box_2d = np.array([
+            [ 0.25,  0.25],
+            [-0.25,  0.25],
+            [-0.25, -0.25],
+            [ 0.25, -0.25],
+        ])
+
+        # [9] 다각형 교차 여부 검사
+        if polygons_intersect_2d(cam_poly_2d, pad_box_2d):
+            return True
+
+        return False
 
     def _computeDone(self):
         """
@@ -758,7 +885,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         seg = np.reshape(seg, (h, w))
         return rgb, dep, seg
 
-    def convert_onboard_images_to_video(self, output_file="onboard_video.mp4", fps=24):
+    def convert_onboard_images_to_video(self, output_file="onboard_video.mp4", fps=30):
         """
         onboard 이미지가 저장된 폴더(self.ONBOARD_IMG_PATH) 내의 PNG 파일들을 ffmpeg를 이용하여 동영상으로 변환하는 예시 메서드.
         PNG 파일은 "frame_<번호>.png" 형식으로 저장되어 있다고 가정함.
@@ -766,6 +893,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # TODO: still in alpha
         # ffmpeg 명령어 예시:
         # ffmpeg -y -framerate 24 -i frame_%d.png -c:v libx264 -pix_fmt yuv420p onboard_video.mp4
+        output_file = os.path.join(self.ONBOARD_IMG_PATH, output_file)
         cmd = [
             "ffmpeg",
             "-y",  # 기존 파일 덮어쓰기
@@ -779,13 +907,14 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         subprocess.run(cmd)
         print("Done. Video saved to:", output_file)
 
-    def convert_external_images_to_video(self, output_file="external_video.mp4", fps=24):
+    def convert_external_images_to_video(self, output_file="external_video.mp4", fps=30):
         """
         만약 외부 카메라 이미지가 저장되는 폴더(self.IMG_PATH)에 PNG 파일들이 저장된다면,
         해당 폴더의 PNG 파일들을 ffmpeg로 동영상으로 변환하는 예시 메서드.
         (BaseAviary의 record 옵션에서 DIRECT 모드로 동작 시 사용됨)
         """
         # TODO: still in alpha
+        output_file = os.path.join(self.IMG_PATH, output_file)
         cmd = [
             "ffmpeg",
             "-y",

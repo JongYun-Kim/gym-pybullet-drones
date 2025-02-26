@@ -211,10 +211,10 @@ class BaseAviary(gym.Env):
                                                                     upAxisIndex=2,
                                                                     physicsClientId=self.CLIENT
                                                                     )
-                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=80.0,
+                self.CAM_PRO = p.computeProjectionMatrixFOV(fov=50.0,
                                                             aspect=self.VID_WIDTH/self.VID_HEIGHT,
-                                                            nearVal=0.1,
-                                                            farVal=1000.0
+                                                            nearVal=0.5,
+                                                            farVal=250.0
                                                             )
         ## Set initial poses
         if initial_xyzs is None:
@@ -286,9 +286,9 @@ class BaseAviary(gym.Env):
         """
         ## Save PNG video frames if RECORD=True and GUI=False
         if self.RECORD and not self.GUI and self.step_counter%self.CAPTURE_FREQ == 0:
-            temp_cam_view = p.computeViewMatrixFromYawPitchRoll(distance=1.0,
+            temp_cam_view = p.computeViewMatrixFromYawPitchRoll(distance=0.8,
                                                                 yaw= 0,
-                                                                pitch=-35,
+                                                                pitch=-30,
                                                                 roll=0,
                                                                 cameraTargetPosition=self.pos[0],
                                                                 upAxisIndex=2,
