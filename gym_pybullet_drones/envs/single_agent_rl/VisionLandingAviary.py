@@ -53,7 +53,7 @@ from gym_pybullet_drones.utils.utils import rgb2gray
 import subprocess
 from scipy.spatial.transform import Rotation
 from gym_pybullet_drones.utils.utils_geometry import project_point_on_pad_plane, inside_pad_box, order_points_convex_polygon, polygons_intersect_2d, line_plane_intersection
-
+from gym_pybullet_drones.utils.utils_ffmpeg import convert_images_to_video
 
 class VisionLandingAviary(BaseSingleAgentAviary):
     def __init__(self,
@@ -885,45 +885,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         seg = np.reshape(seg, (h, w))
         return rgb, dep, seg
 
-    def convert_onboard_images_to_video(self, output_file="onboard_video.mp4", fps=30):
-        """
-        onboard 이미지가 저장된 폴더(self.ONBOARD_IMG_PATH) 내의 PNG 파일들을 ffmpeg를 이용하여 동영상으로 변환하는 예시 메서드.
-        PNG 파일은 "frame_<번호>.png" 형식으로 저장되어 있다고 가정함.
-        """
-        # TODO: still in alpha
-        # ffmpeg 명령어 예시:
-        # ffmpeg -y -framerate 24 -i frame_%d.png -c:v libx264 -pix_fmt yuv420p onboard_video.mp4
-        output_file = os.path.join(self.ONBOARD_IMG_PATH, output_file)
-        cmd = [
-            "ffmpeg",
-            "-y",  # 기존 파일 덮어쓰기
-            "-framerate", str(fps),
-            "-i", os.path.join(self.ONBOARD_IMG_PATH, "frame_%d.png"),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            output_file
-        ]
-        print("Converting onboard images to video...")
-        subprocess.run(cmd)
-        print("Done. Video saved to:", output_file)
-
     def convert_external_images_to_video(self, output_file="external_video.mp4", fps=30):
-        """
-        만약 외부 카메라 이미지가 저장되는 폴더(self.IMG_PATH)에 PNG 파일들이 저장된다면,
-        해당 폴더의 PNG 파일들을 ffmpeg로 동영상으로 변환하는 예시 메서드.
-        (BaseAviary의 record 옵션에서 DIRECT 모드로 동작 시 사용됨)
-        """
-        # TODO: still in alpha
-        output_file = os.path.join(self.IMG_PATH, output_file)
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-framerate", str(fps),
-            "-i", os.path.join(self.IMG_PATH, "frame_%d.png"),
-            "-c:v", "libx264",
-            "-pix_fmt", "yuv420p",
-            output_file
-        ]
-        print("Converting external images to video...")
-        subprocess.run(cmd)
-        print("Done. Video saved to:", output_file)
+        convert_images_to_video(self.IMG_PATH, output_file, fps=fps, pattern="frame_%d.png")
+
+    def convert_onboard_images_to_video(self, output_file="onboard_video.mp4", fps=30):
+        convert_images_to_video(self.ONBOARD_IMG_PATH, output_file, fps=fps, pattern="frame_%d.png")
