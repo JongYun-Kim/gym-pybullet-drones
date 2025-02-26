@@ -12,7 +12,7 @@ from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
 import numpy as np
 
-from utils.my_rllib_utils import create_multi_callbacks_from_classes
+from utils.utils_my_rllib import create_multi_callbacks_from_classes
 
 # TODOs
 # - [ ] Add evaluation during training
@@ -55,59 +55,98 @@ class LogGradAndWeightStatsCallbacks(DefaultCallbacks):
 
 
 class CurriculumCallbacks(DefaultCallbacks):
+
+    def __init__(self, legacy_callbacks_dict = None):
+        super().__init__(legacy_callbacks_dict=legacy_callbacks_dict)
+        self.difficulty_metric = None
+        self.difficulty_plans = None
+        self.difficulty_prev_iter = None
+
+    def on_algorithm_init(self, *, algorithm, **kwargs) -> None:
+        super().on_algorithm_init(algorithm=algorithm, **kwargs)
+        self.difficulty_metric = algorithm.config.get("env_config",{}).get("curriculum_configs",{}).get("metric", None)
+        self.difficulty_plans = algorithm.config.get("env_config",{}).get("curriculum_configs",{}).get("plans", None)
+        if self.difficulty_metric is None or self.difficulty_plans is None:
+            raise ValueError("CurriculumConfigs must be provided in env_config!")
+        # if self.difficulty_metric not in ["timesteps_total", "episode_reward_mean", "training_iteration", "episodes_total", "episodes_this_iter"]:
+        #     raise ValueError("CurriculumConfigs['metric'] must be one of ... them! See the if-clause above this line.")
+
     def on_train_result(self, *, algorithm, result, **kwargs):
         print("\n@@@ on_train_result starts in CurriculumCallbacks @@@\n")
 
-        # Useful metrics
-        # training_iteration = result["training_iteration"]
-        episode_total = result["episodes_total"]
-        # episode_this_iter = result["episodes_this_iter"]
-        # episode_reward_mean = result["episode_reward_mean"]
-        timesteps_total = result["timesteps_total"]
-
         # Difficulty Logic
-        # if timesteps_total < 1000:
-        #     difficulty = 1
-        # elif timesteps_total < 2000:
-        #     difficulty = 2
-        # elif timesteps_total < 3000:
-        #     difficulty = 3
-        # else:
-        #     difficulty = 4
-        if episode_total < 4000:
-            difficulty = 1
-        elif episode_total < 8000:
-            difficulty = 2
-        elif episode_total < 12000:
-            difficulty = 3
+        metric_val = result.get(self.difficulty_metric, None)
+        if metric_val is not None:
+            difficulty = self._get_difficulty_from_plan(metric_val)
+            if self.difficulty_prev_iter is not None and difficulty != self.difficulty_prev_iter:
+                print(f" @@@   [{self.__class__.__name__}] changes difficulty from {self.difficulty_prev_iter} to {difficulty}   @@@\n")
+            else:
+                print(f" @@@   [{self.__class__.__name__}] keeps difficulty at {difficulty}   @@@\n")
+            self.difficulty_prev_iter = difficulty
         else:
-            difficulty = 4
-        print(f" @@@           current difficulty: {difficulty}                @@@\n")
+            raise ValueError(f"Metric '{self.difficulty_metric}' not found in result in 'on_train_result'!")
 
         # Set difficulty
         algorithm.workers.foreach_worker(
             lambda w: w.foreach_env(lambda env: env.set_difficulty(difficulty))
         )
 
-        # Add more in on_train_result
-
-    # End Callbacks
-
+    def _get_difficulty_from_plan(self, metric_val):
+        """
+        예: difficulty_plan = [
+            {"threshold":  800_000, "value": 1},
+            {"threshold": 1_500_000, "value": 2},
+            {"threshold": 2_500_000, "value": 3},
+            {"threshold": float("inf"), "value": 4},
+        ]
+        """
+        # Find the difficulty level
+        for difficulty_minimum_one, plan in enumerate(self.difficulty_plans):
+            if metric_val < plan:
+                return difficulty_minimum_one + 1
+        # If the metric value is larger than the last threshold
+        # print if difficulty reaches the maximum if it's the first time
+        if self.difficulty_prev_iter is None or self.difficulty_prev_iter != len(self.difficulty_plans) + 1:
+            print(f" @@@   [{self.__class__.__name__}] reaches the max difficulty {len(self.difficulty_plans) + 1}   @@@\n")
+        return len(self.difficulty_plans) + 1
 
 if __name__ == "__main__":
 
-    # [1] Ray init
+    # [0] Run flags
+    # # [0-1] ray init
     do_debug = False
     # do_debug = True
-    if do_debug:
-        ray.init(local_mode=True)
+    # # [0-2] curriculum learning
+    do_curriculum_learning = False
+    for _ in range(5):
+        print(f"!!! Curriculum learning is {'ENABLED' if do_curriculum_learning else 'DISABLED'}")
+    # # [0-3] log grad and weight stats
+    enable_log_grad_and_weight_stats = True
 
-    # [2] Callbacks
+    # [1] Ray init
+    ray.init(local_mode=do_debug)
+
+    # [2] Curriculum Configurations (metrics and plans)
+    if do_curriculum_learning:
+        curriculum_configs = {}
+        # Choose a metric to track the curriculum
+        curriculum_configs["metric"] = "timesteps_total"
+        # Plan the curriculum
+        plan_list = [
+            800_000,
+            1_500_000,
+            2_500_000,
+        ]
+        num_difficulties = 4. # you can also automatically set this by len(plan_list) + 1
+        assert len(plan_list) == num_difficulties - 1
+        curriculum_configs["plans"] = plan_list
+    else:
+        curriculum_configs = None
+
+    # [3] Callbacks
     # Determine whether to use
     #   1. Curriculum learning (CurriculumCallbacks) and
     #   2. Log grad and weight stats (LogGradAndWeightStatsCallbacks)
-    do_curriculum_learning = False
-    enable_log_grad_and_weight_stats = True
     callback_classes = []
     if do_curriculum_learning:
         callback_classes.append(CurriculumCallbacks)
@@ -133,9 +172,10 @@ if __name__ == "__main__":
         "fov": 80.0,  # field of view of the drone's camera in degrees
         "img_res": np.array([84, 84]),  # num pixels of the square image
         "img_fps": 30,
-        "episode_len_sec": 30.0,  # episode length in "seconds" (float!)
+        "episode_len_sec": 15.0,  # episode length in "seconds" (float!)
         "include_drone_state": True,
         "difficulty": 1 if do_curriculum_learning else 4,
+        "curriculum_configs": curriculum_configs,
     }
     env_name = "vision_landing_aviary_env"
     register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
@@ -159,7 +199,8 @@ if __name__ == "__main__":
     tune.run(
         "PPO",
         # name="hyprprm_tune-250220",
-        name="delete_me_me",
+        name="los_test_250226",
+        local_dir="~/temps/debugging_only",
         # resume=True,
         # stop={"episode_reward_mean": -101},
         # stop={"training_iteration": 300},
@@ -182,22 +223,22 @@ if __name__ == "__main__":
             "num_gpus": 1,
             "num_workers": 22,
             "num_envs_per_worker": 1,
-            "rollout_fragment_length": 900,
-            "train_batch_size": 22*900,
+            "rollout_fragment_length": 450,
+            "train_batch_size": 22*450,
             "sgd_minibatch_size": 512,
-            "num_sgd_iter": 40,
+            "num_sgd_iter": 19,
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
             "lr": 4e-5,
-            "lr_schedule": [[0,     4e-5],
-                            [2e6,   2e-5],
-                            [2.5e6, 1.8e-5],
-                            [3e6,   1.5e-5],
-                            [3.5e6, 1.3e-5],
-                            [4e6,   1e-5],
-                            [4.5e6, 9e-6],
-                            [5e6,   8e-6],
-                            ],
+            # "lr_schedule": [[0,     4e-5],
+            #                 [2e6,   2e-5],
+            #                 [2.5e6, 1.8e-5],
+            #                 [3e6,   1.5e-5],
+            #                 [3.5e6, 1.3e-5],
+            #                 [4e6,   1e-5],
+            #                 [4.5e6, 9e-6],
+            #                 [5e6,   8e-6],
+            #                 ],
             # Must be fine-tuned when sharing vf-policy layers
             "vf_loss_coeff": 0.10,
             "use_critic": True,
@@ -216,7 +257,7 @@ if __name__ == "__main__":
             #                            [2e6, 0],
             #                            ],
             "clip_param": 0.21,  # 0.3
-            "vf_clip_param": 128,
+            "vf_clip_param": 130,
             # "grad_clip": None,
             "grad_clip": 10.0,
             "kl_target": 0.01,
