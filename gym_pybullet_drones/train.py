@@ -1,3 +1,5 @@
+from gc import enable
+
 import ray
 from ray import tune
 from ray.rllib.models import ModelCatalog
@@ -5,7 +7,7 @@ from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
 # from ray.rllib.models.torch.torch_action_dist import TorchSquashedGaussian
 
-from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary
+from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary, VisionLandingAviaryLCfirst
 from gym_pybullet_drones.models.vision_landing_model import VisionLanderPPO, VisionLanderPPOConfig
 
 from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
@@ -114,20 +116,23 @@ if __name__ == "__main__":
 
     # [0] Run flags
     # # [0-1] ray init
-    do_debug = False
-    # do_debug = True
+    # enable_ray_local_mode_for_debugging = True
+    enable_ray_local_mode_for_debugging = False
     # # [0-2] curriculum learning
-    do_curriculum_learning = False
+    # enable_curriculum_learning = True
+    enable_curriculum_learning = False
     for _ in range(5):
-        print(f"!!! Curriculum learning is {'ENABLED' if do_curriculum_learning else 'DISABLED'}")
+        print(f"\n!!! Curriculum learning is {'ENABLED' if enable_curriculum_learning else 'DISABLED'}")
+        print(f"!!!   Make sure if you want to enable 'CURRICULUM LEARNING' or not.")
     # # [0-3] log grad and weight stats
     enable_log_grad_and_weight_stats = True
+    # enable_log_grad_and_weight_stats = False
 
     # [1] Ray init
-    ray.init(local_mode=do_debug)
+    ray.init(local_mode=enable_ray_local_mode_for_debugging)
 
     # [2] Curriculum Configurations (metrics and plans)
-    if do_curriculum_learning:
+    if enable_curriculum_learning:
         curriculum_configs = {}
         # Choose a metric to track the curriculum
         curriculum_configs["metric"] = "timesteps_total"
@@ -148,7 +153,7 @@ if __name__ == "__main__":
     #   1. Curriculum learning (CurriculumCallbacks) and
     #   2. Log grad and weight stats (LogGradAndWeightStatsCallbacks)
     callback_classes = []
-    if do_curriculum_learning:
+    if enable_curriculum_learning:
         callback_classes.append(CurriculumCallbacks)
     if enable_log_grad_and_weight_stats:
         callback_classes.append(LogGradAndWeightStatsCallbacks)
@@ -174,11 +179,13 @@ if __name__ == "__main__":
         "img_fps": 30,
         "episode_len_sec": 15.0,  # episode length in "seconds" (float!)
         "include_drone_state": True,
-        "difficulty": 1 if do_curriculum_learning else 4,
+        "difficulty": 1 if enable_curriculum_learning else 4,
         "curriculum_configs": curriculum_configs,
     }
-    env_name = "vision_landing_aviary_env"
-    register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
+    # env_name = "vision_landing_aviary_env"
+    # register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
+    env_name = "vision_landing_aviary_env_lc_first"
+    register_env(env_name, lambda cfg: VisionLandingAviaryLCfirst(**cfg))
 
     # [4] Model
     # Set up custom model configuration
@@ -199,12 +206,12 @@ if __name__ == "__main__":
     tune.run(
         "PPO",
         # name="hyprprm_tune-250220",
-        name="los_test_250226",
+        name="los_and_control_test_250226",
         local_dir="~/temps/debugging_only",
         # resume=True,
         # stop={"episode_reward_mean": -101},
         # stop={"training_iteration": 300},
-        checkpoint_freq=8,
+        checkpoint_freq=5,
         keep_checkpoints_num=16,
         checkpoint_at_end=True,
         checkpoint_score_attr="episode_reward_mean",
@@ -230,17 +237,17 @@ if __name__ == "__main__":
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
             "lr": 4e-5,
-            # "lr_schedule": [[0,     4e-5],
-            #                 [2e6,   2e-5],
-            #                 [2.5e6, 1.8e-5],
-            #                 [3e6,   1.5e-5],
-            #                 [3.5e6, 1.3e-5],
-            #                 [4e6,   1e-5],
-            #                 [4.5e6, 9e-6],
-            #                 [5e6,   8e-6],
+            # "lr_schedule": [[0,     5e-5],
+            #                 [2e5,   3e-5],
+            #                 [2.5e5, 2.8e-5],
+            #                 [3e5,   2.5e-5],
+            #                 [3.5e5, 2.2e-5],
+            #                 [4e5,   2e-5],
+            #                 [4.5e5, 1.7e-5],
+            #                 [1e6,   8e-6],
             #                 ],
             # Must be fine-tuned when sharing vf-policy layers
-            "vf_loss_coeff": 0.10,
+            "vf_loss_coeff": tune.grid_search([0.02, 0.009, 0.005]),
             "use_critic": True,
             "use_gae": True,
             "gamma": 0.991,
@@ -257,7 +264,7 @@ if __name__ == "__main__":
             #                            [2e6, 0],
             #                            ],
             "clip_param": 0.21,  # 0.3
-            "vf_clip_param": 130,
+            "vf_clip_param": 200,
             # "grad_clip": None,
             "grad_clip": 10.0,
             "kl_target": 0.01,
@@ -278,7 +285,7 @@ if __name__ == "__main__":
     #         "config": {
     #             "framework": "torch",
     #             #
-    #             # "callbacks": CurriculumCallbacks if do_curriculum_learning else None,
+    #             # "callbacks": CurriculumCallbacks if enable_curriculum_learning else None,
     #             "callbacks": WatchEncoderGradNormCallbacks,
     #             #
     #             "model": {

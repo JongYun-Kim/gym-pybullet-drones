@@ -231,13 +231,13 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             enc_out_flattened_cat = torch.cat([enc_out_flattened, drone_state], dim=1)  # (batch_size, conv_out_dim + 10)
 
             # (2) Embedding
-            x_embd = self.embedding(enc_out_flattened_cat)                              # (batch_size, embed_dim)
+            x_embd = self.embedding(enc_out_flattened_cat)  # (batch_size, embed_dim)
 
             # (3) Policy (actor) forward
-            logits = self.policy(x_embd)                            # (batch_size, num_outputs)
+            logits = self.policy(x_embd)  # (batch_size, num_outputs)
 
             # (4) Value (critic) forward
-            self._value_out = self.critic(x_embd)             # (batch_size, 1)
+            self._value_out = self.critic(x_embd)  # (batch_size, 1)
 
             # (5) Check for NaN/Inf in the output
             if self.cfg.ru_debugging and batch_size == 512:
@@ -253,6 +253,14 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
                     print("logits에서 NaN 발생!")
                 if torch.isinf(logits).any():
                     raise ValueError("logits에서 Inf 발생!")
+
+            # # print: log_std vals
+            # num_outputs = logits.shape[1]
+            # assert num_outputs % 2 == 0, f"num_outputs({num_outputs}) is not even!"
+            # num_std_vals = num_outputs // 2
+            # log_std_vals = logits[:, num_std_vals:]
+            # print(f"Average log_std vals: {log_std_vals.mean(axis=0)}")
+            # # print(f"Std of log_std vals: {log_std_vals.std(axis=0)}")
 
             return logits, state
 
