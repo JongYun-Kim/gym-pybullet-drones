@@ -811,7 +811,6 @@ class BaseAviary(gym.Env):
         (for single or multi-agent aviaries, respectively).
 
         Parameters
-        ----------
         action : ndarray | dict
             (4)-shaped array of ints (or dictionary of arrays) containing the current RPMs input.
 
@@ -831,7 +830,6 @@ class BaseAviary(gym.Env):
         """Draws the local frame of the n-th drone in PyBullet's GUI.
 
         Parameters
-        ----------
         nth_drone : int
             The ordinal number/position of the desired drone in list self.DRONE_IDS.
 
@@ -862,8 +860,6 @@ class BaseAviary(gym.Env):
                                                       replaceItemUniqueId=int(self.Z_AX[nth_drone]),
                                                       physicsClientId=self.CLIENT
                                                       )
-    
-    ################################################################################
 
     def _addObstacles(self):
         """Add obstacles to the environment.
