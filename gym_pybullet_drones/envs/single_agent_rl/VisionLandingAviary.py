@@ -143,7 +143,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 드론 높이는 약 10.0으로 설정
           - 착륙 패드의 위치(self.landing_pad_base_start_pos)를 기준으로
             반경 3.0m 이내의 임의의 오프셋을 주어 LOS 확보
-          - 자세: roll, pitch는 ±15° 범위, yaw는 완전 임의
+          - 자세: roll, pitch는 ±1° 범위 (조금만 흔들자 일단), yaw는 완전 임의
         """
         # _resetLandingPad()가 먼저 호출되어 pad의 위치가 초기화되어 있다고 가정
         pad_xy = self.landing_pad_base_start_pos[:2]  # 패드의 x, y 좌표
@@ -156,7 +156,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             offset_y = r * np.sin(theta)
             drone_x = pad_xy[0] + offset_x
             drone_y = pad_xy[1] + offset_y
-            drone_z = 10.0  # 고도 10.0 근처
+            drone_z = 4.0  # 고도 10.0 근처
         else:
             drone_x, drone_y, drone_z = initial_xyzs[0]
 
@@ -488,7 +488,6 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         else:
             raise ValueError(f"Invalid curriculum difficulty: {self.difficulty}")
 
-
     def _vanilla_reward_function(self):
         # 1. Check visibility
         reward_visibility = self._compute_reward_visibility()
@@ -557,10 +556,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         drone_altitude = self.pos[0, 2]
 
         if drone_altitude >= self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
-            print('    VisionLandingAviary env: Landed!')
-            return 100.0
+            print(' @@  VisionLandingAviary env: Landed!')
+            return 180.0
         elif drone_altitude < self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
-            print('    VisionLandingAviary env: Crashed!')
+            print(' @@  VisionLandingAviary env: Crashed!')
             if no_crash_penalty:
                 return 0.0
             else:
@@ -578,80 +577,6 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         else:
             # print("  !!  [VisionLandingAviary] env: Out of LOS!")
             return -0.01
-
-    def _check_los(self, pad_position):
-        """
-        Returns True if the drone has line-of-sight to the pad; otherwise, False.
-        """
-        drone_pos = self.pos[0, :]          # shape: (3,)
-        drone_quat = self.quat[0, :]        # shape: (4,) 가정: (x, y, z, w) 또는 (w, x, y, z)
-
-        # 월드 좌표계에서 타겟 벡터
-        target_vec_world = pad_position - drone_pos  # shape: (3,)
-
-        # 쿼터니언 → 회전행렬(또는 Rotation 객체)
-        # Scipy는 기본적으로 [x, y, z, w] 순서를 받음. (만약 [w, x, y, z]라면 순서 맞춰야 함)
-        rot_world_to_drone = Rotation.from_quat(drone_quat)
-
-        # 월드 → 드론 바디로 벡터 변환
-        target_vec_drone = rot_world_to_drone.inv().apply(target_vec_world)
-
-        # 드론 바디에서 카메라가 -Z 방향을 본다고 가정하므로,
-        # z가 음수이면 카메라가 바라보는 '앞쪽(아래쪽)'에 위치하게 됨
-        x_d = target_vec_drone[0]
-        y_d = target_vec_drone[1]
-        z_d = target_vec_drone[2]
-
-        # 카메라가 -Z쪽을 본다고 할 때, z_d가 양수라면 카메라의 "뒷면"에 있는 것
-        if z_d > 0:
-            return False
-
-        # FOV 체크
-        # 수평/수직 시야각이 self.fov로 동일하다고 할 때,
-        # x, y 각 축에 대해 시야각을 초과하는지 확인하면 됨.
-        # 각도 계산은 arctan2(수평방향, 종방향) 사용
-        # z축이 음수이므로 -z_d를 분모로 사용 (z_d가 음수이므로 -z_d는 양수)
-        half_fov = self.fov / 2.0
-
-        # arctan2의 결과에 abs()를 취해서 카메라 중앙축으로부터 떨어진 각도를 구함
-        angle_x = np.degrees(np.arctan2(abs(x_d), -z_d))  # 드론 바디 기준
-        angle_y = np.degrees(np.arctan2(abs(y_d), -z_d))
-
-        # x, y 방향 모두 fov/2 이내면 카메라 프레임 안에 있는 것
-        if (angle_x <= half_fov) and (angle_y <= half_fov):
-            return True
-        else:
-            return False
-
-    def _check_los_segmentation(self):
-        """
-        세그멘테이션을 활용하여 착륙 패드(landing_pad_id)의 link가
-        카메라 프레임 안에 하나라도 찍혀 있으면 LOS=True 반환
-        """
-        # NOT TESTED YET
-        # 세그멘테이션 사용해서 이미지 받아오기
-        # segmentation=True 로 호출해야 ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX 모드로 동작합니다.
-        _, _, seg = self._getDroneImages(nth_drone=0, segmentation=True)
-
-        # seg 배열의 각 픽셀에는 objectUniqueId와 linkIndex가 비트로 encoding되어 있음
-        # 공식 문서에 따르면, segPixelValue = objectUniqueId << 24 + linkIndex << 16 + ...
-        # 여기서 objectUniqueId를 얻으려면 (segPixelValue & ((1 << 24) - 1)) >> 16 이런 식으로 bit마스크를 해주어야 합니다.
-
-        # 하지만 착륙 패드의 link들도 구별하려면, linkIndex까지 확인해야 합니다.
-        # pad_id = self.landing_pad_id
-        pad_uid = self.landing_pad_id  # 착륙 패드의 유니크 ID
-
-        height, width = seg.shape[:2]
-        for y in range(height):
-            for x in range(width):
-                pix = seg[y, x]
-                # 오브젝트 ID
-                object_uid = (pix & ((1 << 24) - 1)) >> 16
-                if object_uid == pad_uid:
-                    # 착륙 패드의 어느 link든 한 픽셀이라도 카메라에 찍혔다면 LOS = True
-                    return True
-
-        return False
 
     def _check_los_camera_polygon_vs_pad_box(self):
         """
@@ -895,3 +820,144 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
     def convert_onboard_images_to_video(self, output_file="onboard_video.mp4", fps=30):
         convert_images_to_video(self.ONBOARD_IMG_PATH, output_file, fps=fps, pattern="frame_%d.png")
+
+    # About to deprecated
+    def _check_los(self, pad_position):
+        """
+        Returns True if the drone has line-of-sight to the pad; otherwise, False.
+        """
+        drone_pos = self.pos[0, :]          # shape: (3,)
+        drone_quat = self.quat[0, :]        # shape: (4,) 가정: (x, y, z, w) 또는 (w, x, y, z)
+
+        # 월드 좌표계에서 타겟 벡터
+        target_vec_world = pad_position - drone_pos  # shape: (3,)
+
+        # 쿼터니언 → 회전행렬(또는 Rotation 객체)
+        # Scipy는 기본적으로 [x, y, z, w] 순서를 받음. (만약 [w, x, y, z]라면 순서 맞춰야 함)
+        rot_world_to_drone = Rotation.from_quat(drone_quat)
+
+        # 월드 → 드론 바디로 벡터 변환
+        target_vec_drone = rot_world_to_drone.inv().apply(target_vec_world)
+
+        # 드론 바디에서 카메라가 -Z 방향을 본다고 가정하므로,
+        # z가 음수이면 카메라가 바라보는 '앞쪽(아래쪽)'에 위치하게 됨
+        x_d = target_vec_drone[0]
+        y_d = target_vec_drone[1]
+        z_d = target_vec_drone[2]
+
+        # 카메라가 -Z쪽을 본다고 할 때, z_d가 양수라면 카메라의 "뒷면"에 있는 것
+        if z_d > 0:
+            return False
+
+        # FOV 체크
+        # 수평/수직 시야각이 self.fov로 동일하다고 할 때,
+        # x, y 각 축에 대해 시야각을 초과하는지 확인하면 됨.
+        # 각도 계산은 arctan2(수평방향, 종방향) 사용
+        # z축이 음수이므로 -z_d를 분모로 사용 (z_d가 음수이므로 -z_d는 양수)
+        half_fov = self.fov / 2.0
+
+        # arctan2의 결과에 abs()를 취해서 카메라 중앙축으로부터 떨어진 각도를 구함
+        angle_x = np.degrees(np.arctan2(abs(x_d), -z_d))  # 드론 바디 기준
+        angle_y = np.degrees(np.arctan2(abs(y_d), -z_d))
+
+        # x, y 방향 모두 fov/2 이내면 카메라 프레임 안에 있는 것
+        if (angle_x <= half_fov) and (angle_y <= half_fov):
+            return True
+        else:
+            return False
+
+    # About to deprecated
+    def _check_los_segmentation(self):
+        """
+        세그멘테이션을 활용하여 착륙 패드(landing_pad_id)의 link가
+        카메라 프레임 안에 하나라도 찍혀 있으면 LOS=True 반환
+        """
+        # NOT TESTED YET
+        # 세그멘테이션 사용해서 이미지 받아오기
+        # segmentation=True 로 호출해야 ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX 모드로 동작합니다.
+        _, _, seg = self._getDroneImages(nth_drone=0, segmentation=True)
+
+        # seg 배열의 각 픽셀에는 objectUniqueId와 linkIndex가 비트로 encoding되어 있음
+        # 공식 문서에 따르면, segPixelValue = objectUniqueId << 24 + linkIndex << 16 + ...
+        # 여기서 objectUniqueId를 얻으려면 (segPixelValue & ((1 << 24) - 1)) >> 16 이런 식으로 bit마스크를 해주어야 합니다.
+
+        # 하지만 착륙 패드의 link들도 구별하려면, linkIndex까지 확인해야 합니다.
+        # pad_id = self.landing_pad_id
+        pad_uid = self.landing_pad_id  # 착륙 패드의 유니크 ID
+
+        height, width = seg.shape[:2]
+        for y in range(height):
+            for x in range(width):
+                pix = seg[y, x]
+                # 오브젝트 ID
+                object_uid = (pix & ((1 << 24) - 1)) >> 16
+                if object_uid == pad_uid:
+                    # 착륙 패드의 어느 link든 한 픽셀이라도 카메라에 찍혔다면 LOS = True
+                    return True
+
+        return False
+
+
+class VisionLandingAviaryLCfirst(VisionLandingAviary):
+    def __init__(self,
+                 drone_model: DroneModel = DroneModel.CF2X,
+                 initial_xyzs=None,
+                 initial_rpys=None,
+                 physics: Physics = Physics.PYB,
+                 freq: int = 300,
+                 aggregate_phy_steps: int = 10,
+                 gui: bool = False,
+                 record: bool = False,
+                 obs: ObservationType = ObservationType.BW,
+                 act: ActionType = ActionType.VEL,
+                 channel_first: bool = True,
+                 stack_size: int = 4,
+                 fov: float = 80.0,
+                 img_res: np.ndarray = np.array([84, 84]),
+                 img_fps: int = 30,
+                 episode_len_sec: float = 30.0,
+                 include_drone_state: bool = True,
+                 difficulty: int = 4,
+                 curriculum_configs: dict = None,
+                 ):
+        super().__init__(drone_model=drone_model,
+                         initial_xyzs=initial_xyzs,
+                         initial_rpys=initial_rpys,
+                         physics=physics,
+                         freq=freq,
+                         aggregate_phy_steps=aggregate_phy_steps,
+                         gui=gui,
+                         record=record,
+                         obs=obs,
+                         act=act,
+                         channel_first=channel_first,
+                         stack_size=stack_size,
+                         fov=fov,
+                         img_res=img_res,
+                         img_fps=img_fps,
+                         episode_len_sec=episode_len_sec,
+                         include_drone_state=include_drone_state,
+                         difficulty=difficulty,
+                         curriculum_configs=curriculum_configs)
+
+    def _vanilla_reward_function(self):
+        # 2. Check Landing/Crashing
+        reward_landing_or_crashing = self._compute_reward_landing_or_crashing()
+        if reward_landing_or_crashing < 0:
+            return reward_landing_or_crashing
+
+        # 1. Check visibility
+        reward_visibility = self._compute_reward_visibility()
+        if reward_visibility < 0:
+            return reward_visibility
+
+        # 3. Compute vertical velocity reward (safety)
+        reward_vertical_velocity = self._compute_vertical_velocity_reward()
+        # 4. Compute horizontal distance reward
+        reward_horizontal_dist = self._compute_horizontal_dist_reward()
+
+        # 5. Combine rewards
+        reward = 0.6 * reward_horizontal_dist + 1.0 * reward_vertical_velocity
+        reward += reward_visibility + reward_landing_or_crashing
+        return reward
+
