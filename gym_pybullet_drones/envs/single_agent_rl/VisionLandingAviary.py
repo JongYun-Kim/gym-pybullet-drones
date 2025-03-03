@@ -389,7 +389,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
 
-        return {"images": self._get_stacked_images(rgb), "drone_state": self._get_stacked_state()}
+        return {"images": self._get_stacked_images(rgb), "drone_states": self._get_stacked_state()}
 
     def _observationSpace(self):
         """

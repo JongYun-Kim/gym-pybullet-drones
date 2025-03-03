@@ -1,24 +1,27 @@
-import copy  # Remove this if not used (later)
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
-from ray.rllib.utils.typing import ModelConfigDict, TensorType
+from ray.rllib.utils.typing import TensorType
 # typing
-from typing import List, Union, Dict, Optional
+from typing import List, Union, Dict, Optional, Tuple
 from dataclasses import dataclass, field, asdict
 # torch
 import torch
 import torch.nn as nn
 import numpy as np
-# custom modules
+# for torch.autograd.detect_anomaly()
 import contextlib
 # from yours
+from gym_pybullet_drones.models.modules.module_builders import build_encoder, build_embedding, build_mlp
 
 
 @dataclass
 class VisionLanderPPOConfig:
+    # Debugging mode
     ru_debugging: bool = False
-    is_shared_net: bool= False
     use_anomaly_detection: bool = False
+    # Evaluation mode
     eval_mode: bool = False
+    # Network structure configs
+    is_shared_net: bool = False
     # Encoder configs
     encoder_channels: List[int] = field(default_factory=lambda: [32, 32, 32, 32])
     kernel_sizes: List[int] = field(default_factory=lambda: [3, 3, 3, 3])
@@ -95,109 +98,327 @@ class VisionLanderPPOConfig:
 
 
 class VisionLanderPPO(TorchModelV2, nn.Module):
+    """
+    Network Architecture:
+        - Actor: encoder -> embedding -> dense
+        - Critic: encoder -> embedding -> dense; shares enc/embd w/ actor if is_shared_net=True
+    """
+    def __init__(self, obs_space, action_space, num_outputs, model_config, name, **kwargs):
+        nn.Module.__init__(self)  # Initialize nn.Module first
+        TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
+
+        # [1] Get model config
+        self.cfg: VisionLanderPPOConfig = self._get_and_validate_model_config(model_config)
+
+        # [2] Get obs/act space
+        obs_space_images = obs_space.original_space["images"]
+        obs_space_drone_state = obs_space.original_space["drone_states"]
+
+        # [3] Get input/output sizes
+        input_channel_size = obs_space_images.shape[0]  # assumes C,H,W; channel first
+        drone_state_size = obs_space_drone_state.shape[0]
+        action_size = action_space.shape[0]
+        if self.cfg.ru_debugging:
+            self._validate_io_sizes(input_channel_size, drone_state_size, action_size, num_outputs)
+
+        # [4] Build networks
+        # [4-1] Actor encoder/embedding
+        self.actor_encoder = build_encoder(
+            input_channel_size,
+            self.cfg.encoder_channels,
+            self.cfg.kernel_sizes,
+            self.cfg.strides
+        )
+        combined_size = self._get_combined_size(self.actor_encoder, input_channel_size,
+                                                obs_space_images.shape[1], obs_space_images.shape[2], drone_state_size)
+        self.actor_embedding = build_embedding(
+            combined_size,
+            self.cfg.embed_dim,
+            self.cfg.use_layer_norm
+        )
+
+        # [4-2] Actor dense
+        self.actor_dense = build_mlp(
+            input_dim=self.cfg.embed_dim,
+            hidden_sizes=self.cfg.policy_hidden_sizes,
+            output_dim=num_outputs,
+        )
+
+        # [4-3] Critic encoder/embedding
+        if self.cfg.is_shared_net: # Shared network: reuse actor enc/embd; but set None-s for debugging purposes
+            self.critic_encoder, self.critic_embedding = None, None
+        else:                      # Separate network: build encoder/embedding for critic
+            self.critic_encoder = build_encoder(
+                input_channel_size,
+                self.cfg.encoder_channels,
+                self.cfg.kernel_sizes,
+                self.cfg.strides
+            )
+            self.critic_embedding = build_embedding(
+                combined_size,
+                self.cfg.embed_dim,
+                self.cfg.use_layer_norm
+            )
+
+        # [4-4] Critic dense
+        self.critic_dense = build_mlp(
+            input_dim=self.cfg.embed_dim,
+            hidden_sizes=self.cfg.value_hidden_sizes,
+            output_dim=1,
+        )
+
+        self._value_out = None  # store this for value_function() in forward()
+
+    def _get_and_validate_model_config(self, model_config):
+        if model_config is not None:
+            cfg: VisionLanderPPOConfig = model_config["custom_model_config"]["config_instance"]
+        else:
+            raise ValueError("Model config is None! Please you MUST provide a model config in dict.")
+        if cfg.ru_debugging:
+            assert isinstance(cfg, VisionLanderPPOConfig), \
+                f"model_config['custom_model_config'] is not VisionLanderPPOConfig. It is {type(cfg)}."
+        if cfg.ru_debugging:
+            if self.cfg.is_shared_net:
+                print("Creating a SHARED network for actor and critic")
+            else:
+                print("Creating SEPARATE networks for actor and critic")
+        return cfg
+
+    def _validate_io_sizes(self, input_channel_size, drone_state_size, action_size, num_outputs):
+        assert input_channel_size == 4, f"input_channel_size isn't 4! It is {input_channel_size}."
+        assert drone_state_size == 7 or drone_state_size ==10, f"drone_state_size is not 7|10! It's {drone_state_size}."
+        assert action_size == 3, f"action_size is not 3! It is {action_size}."
+        assert num_outputs == 2 * action_size, \
+            f"num_outputs is not 2 * action_size! It is {num_outputs} and action_size is {action_size}."
+
+    def _get_combined_size(self, enc, c, h, w, drone_state_size):
+        test_input = torch.zeros(1, c, h, w)
+        enc_out = enc(test_input)
+        conv_out_flattened_size = int(np.prod(enc_out.shape[1:]))
+        if self.cfg.ru_debugging:
+            # remove this assertion once stable
+            assert conv_out_flattened_size == 32 * 35 * 35, (f"_conv_out_size is {self._conv_out_flattened_size}, "
+                                                               f"if you used non-default cfgs, please remove this line "
+                                                               f"or check the dim manually.")
+        return conv_out_flattened_size + drone_state_size
+
+    def forward(
+            self,
+            input_dict: Dict[str, TensorType],
+            state: List[TensorType],
+            seq_lens: TensorType,
+    ) -> (TensorType, List[TensorType]):
+        # Set context manager for anomaly detection
+        if self.cfg.use_anomaly_detection:
+            with torch.autograd.detect_anomaly():
+                return self._forward_impl(input_dict, state, seq_lens)
+        else:
+            return self._forward_impl(input_dict, state, seq_lens)
+
+    def _forward_impl(
+            self,
+            input_dict: Dict[str, TensorType],
+            state: List[TensorType],
+            seq_lens: TensorType,
+    ) -> (TensorType, List[TensorType]):
+        obs_dict = input_dict["obs"]
+        stacked_images = obs_dict["images"]  # shape: (batch_size, stack_size==channel_size, H, W)
+        stacked_drone_states = obs_dict["drone_states"]  # shape: (batch_size, drone_state_size)
+
+        batch_size = stacked_images.shape[0]
+
+        # 이미지 정규화 (복사 후 연산으로 변경)
+        if self.cfg.ru_debugging:
+            if self.cfg.eval_mode:
+                assert stacked_images.dtype in [torch.uint8, torch.float32], f"stacked_images.dtype: {stacked_images.dtype}"
+                # Type casting: not mandatory, but for readability (i.e. it's automatically done when normalized)
+                stacked_images = stacked_images.float() if stacked_images.dtype == torch.uint8 else stacked_images.clone()
+            else:
+                assert stacked_images.dtype == torch.float32, f"stacked_images.dtype: {stacked_images.dtype}"
+                stacked_images = stacked_images.clone()  # Create a copy to avoid in-place operation
+        else:
+            stacked_images = stacked_images.float() if stacked_images.dtype == torch.uint8 else stacked_images.clone()
+
+        stacked_images = stacked_images / 255.0  # Not in-place operation
+
+        # Actor: (images) ->[enc]-> enc_out+drone_state ->[embd]-> embd -> [dense]-> logits
+        actor_enc_out = self.actor_encoder(stacked_images)
+        actor_enc_flattened = actor_enc_out.reshape(batch_size, -1)
+        actor_input = torch.cat([actor_enc_flattened, stacked_drone_states], dim=1)
+        actor_embd = self.actor_embedding(actor_input)
+        logits = self.actor_dense(actor_embd)  # (batch_size, num_outputs)
+
+        # Critic: (images) ->[enc]-> enc_out+drone_state ->[embd]-> embd -> [dense]-> value
+        if self.cfg.is_shared_net:
+            critic_enc_out, critic_enc_flattened, critic_input = actor_enc_out, actor_enc_flattened, actor_input
+            critic_embd = actor_embd
+        else:
+            critic_enc_out = self.critic_encoder(stacked_images)  # (batch_size, 32, 35, 35)
+            critic_enc_flattened = critic_enc_out.reshape(batch_size, -1)  # (batch_size, conv_out_flattened_size)
+            critic_input = torch.cat([critic_enc_flattened, stacked_drone_states], dim=1) # (b, combined_size)
+            critic_embd = self.critic_embedding(critic_input)  # (batch_size, embed_dim)
+
+        self._value_out = self.critic_dense(critic_embd)  # (batch_size, 1)
+
+        # NaN/Inf 체크
+        if self.cfg.ru_debugging and batch_size == 512:
+            if torch.isnan(logits).any():
+                print(f"@@@@@@@@@@@@@ stacked_images (nan): {torch.isnan(stacked_images).sum()}")
+                print(f"@@@@@@@@@@@@@ drone_state (nan): {torch.isnan(stacked_drone_states).sum()}")
+                print(f"@@@@@@@@@@@@@ actor_enc_out (nan): {torch.isnan(actor_enc_out).sum()}")
+                print(f"@@@@@@@@@@@@@ actor_enc_flattened (nan): {torch.isnan(actor_enc_flattened).sum()}")
+                print(f"@@@@@@@@@@@@@ actor_embd (nan): {torch.isnan(actor_embd).sum()}")
+
+                if not self.cfg.is_shared_net:
+                    print(f"@@@@@@@@@@@@@ critic_enc_out (nan): {torch.isnan(critic_enc_out).sum()}")
+                    print(f"@@@@@@@@@@@@@ critic_enc_flattened (nan): {torch.isnan(critic_enc_flattened).sum()}")
+                    print(f"@@@@@@@@@@@@@ critic_embd (nan): {torch.isnan(critic_embd).sum()}")
+
+                print(f"@@@@@@@@@@@@@ logits (nan): {torch.isnan(logits).sum(axis=0)}")
+                print(f"@@@@@@@@@@@@@ self._value_out (nan): {torch.isnan(self._value_out).sum()}")
+                print("logits에서 NaN 발생!")
+            if torch.isinf(logits).any():
+                raise ValueError("logits에서 Inf 발생!")
+
+        return logits, state
+
+    def value_function(self) -> TensorType:
+        """Squeezes the last dim of self._value_out from _forward_impl() and returns it."""
+        assert self._value_out is not None, "Value head has not been computed yet!"
+        return self._value_out.squeeze(-1)  # (batch_size,)
+
+
+class VisionLanderPPOLegacy(TorchModelV2, nn.Module):
     def __init__(self, obs_space, action_space, num_outputs, model_config, name, **kwargs):
         nn.Module.__init__(self)  # Initialize nn.Module first
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
 
         # (0) Get model config
-        # (0-1) Load model config
         if model_config is not None:
             self.cfg: VisionLanderPPOConfig = model_config["custom_model_config"]["config_instance"]
         else:
-            raise ValueError("Model config is None! Please you MUST provide a model config in dict.")
+            raise ValueError("Model config is None! You MUST provide a model config in dict.")
+
+        # For convenience
+        self.obs_space = obs_space
+        self.action_space = action_space
+        self.num_outputs = num_outputs
+
+        # (0) Basic debug checks
         if self.cfg.ru_debugging:
             assert isinstance(self.cfg, VisionLanderPPOConfig), \
                 f"model_config['custom_model_config'] is not VisionLanderPPOConfig. It is {type(self.cfg)}."
-        # (0-2) Load obs_space, action_space
-        obs_space_images = obs_space.original_space["images"]
-        obs_space_drone_state = obs_space.original_space["drone_state"]
-
-        input_channel_size = obs_space_images.shape[0]
-        if self.cfg.ru_debugging:
-            # action space size
             action_size = action_space.shape[0]
-            assert action_size == 3, f"action_size is not 4! It is {action_size}."
+            assert action_size == 3, f"action_size is not 3! It is {action_size}."
             assert num_outputs == 2 * action_size, \
-                f"num_outputs is not 2 * action_size! It is {num_outputs} and action_size is {action_size}."
-            # obs_space 채널
-            assert input_channel_size == 4, f"input_channel_size isn't 4! It is {input_channel_size}."
+                f"num_outputs is not 2 * action_size! It is {num_outputs} vs. {2*action_size}."
 
-        # (0-3) Validate the model config (set default values if not provided)
-        #   Here, the debug flag does not skip the validation as config error may be caused by human error.
+        # (1) Build networks
+        if self.cfg.is_shared_net:
+            # 기존 처럼 한 벌의 encoder/embedding 만 사용
+            self._build_shared_nets()
+        else:
+            # actor 와 critic 각각 별도 encoder/embedding 사용
+            self._build_separate_nets()
 
-        # (1) Encoder
-        ## output size = (batch_size, 32, h_new, w_new)
-        #### h_new = ((h_org - (k-1)) / s) - (k-1) - (k-1) - (k-1)  # stride > 1 only in the first layer
-        #### e.g. in: (b, 4, 84, 84) -> out: (b, 32, 35, 35)
-        #     - encoder_channels, kernel_sizes, strides 를 iterate 하여 layer 생성
-        encoder_layers = []
-        in_channels = input_channel_size
+        self._value_out = None
+        self._current_obs = None  # value_function()에서 사용할 임시 저장공간
+
+    def _build_encoder(self, input_channels: int) -> nn.Sequential:
+        """공용으로 쓰는 함수: Conv encoder를 만드는 부분."""
+        layers = []
+        in_channels = input_channels
         for out_ch, k, s in zip(self.cfg.encoder_channels, self.cfg.kernel_sizes, self.cfg.strides):
-            encoder_layers.append(nn.Conv2d(
-                in_channels=in_channels,
-                out_channels=out_ch,
-                kernel_size=k,
-                stride=s
-            ))
-            encoder_layers.append(nn.ReLU())
-            in_channels = out_ch  # match: prev-out -> next-in
-        # Build the encoder
-        self.encoder = nn.Sequential(*encoder_layers)
-        # Get encoder output size using a sample data
-        test_input = torch.zeros(1, obs_space_images.shape[0], obs_space_images.shape[1], obs_space_images.shape[2])
-        conv_out = self.encoder(test_input)
-        self._conv_out_flattened_size = int(np.prod(conv_out.shape[1:]))  # C * H * W
-        # remove this assertion once stable
-        if self.cfg.ru_debugging:
-            assert self._conv_out_flattened_size == 32 * 35 * 35, (f"_conv_out_size is {self._conv_out_flattened_size}, "
-                                                                   f"if you used non-default cfgs, please remove this line "
-                                                                   f"or check the dim manually.")
+            layers.append(nn.Conv2d(in_channels=in_channels, out_channels=out_ch, kernel_size=k, stride=s))
+            layers.append(nn.ReLU())
+            in_channels = out_ch
+        return nn.Sequential(*layers)
 
-        # (2) Embedding layer
-        #     - encoder out(Flatten) + drone_state -> Linear -> BN -> Tanh
-        #     - 최종적으로 embed_dim
+    def _get_conv_out_size(self, encoder: nn.Sequential, in_shape) -> int:
+        """dummy input을 태워보고 Conv output shape을 구한다."""
+        test_input = torch.zeros(1, *in_shape)  # (C, H, W)...
+        conv_out = encoder(test_input)
+        return int(np.prod(conv_out.shape[1:]))
+
+    def _build_embedding(self, in_dim: int) -> nn.Sequential:
+        """embedding 레이어: (conv_out + drone_state) -> embed_dim."""
         norm_layer = nn.LayerNorm(self.cfg.embed_dim) if self.cfg.use_layer_norm else nn.BatchNorm1d(self.cfg.embed_dim)
-        self.embedding = nn.Sequential(
-            nn.Linear(self._conv_out_flattened_size + obs_space_drone_state.shape[0], self.cfg.embed_dim),
+        return nn.Sequential(
+            nn.Linear(in_dim, self.cfg.embed_dim),
             norm_layer,
             nn.Tanh()
         )
 
-        # (3) Policy network
-        #     - structure: Linear -> ReLU -> Linear -> ReLU -> ... -> Linear
-        #     - input: (batch_size, embed_dim)
-        #     - output: (batch_size, 4)
-        policy_layers = []
-        in_size = self.cfg.embed_dim
-        for out_size in self.cfg.policy_hidden_sizes:
-            policy_layers.append(nn.Linear(in_size, out_size))
-            policy_layers.append(nn.ReLU())
-            in_size = out_size
-        # 최종적으로 action_space.n(=4)차원으로 매핑
-        # policy_layers.append(nn.Linear(in_size, self.action_space.n))
-        policy_layers.append(nn.Linear(in_size, num_outputs))
-        # Build the policy network
-        # Output shape: (batch_size, num_outputs)
-        self.policy = nn.Sequential(*policy_layers)
+    def _build_fc_layers(self, in_size: int, hidden_sizes: List[int], out_size: int = None) -> nn.Sequential:
+        """MLP 블럭을 만드는 유틸 함수"""
+        layers = []
+        prev_size = in_size
+        for h in hidden_sizes:
+            layers.append(nn.Linear(prev_size, h))
+            layers.append(nn.ReLU())
+            prev_size = h
+        if out_size is not None:
+            layers.append(nn.Linear(prev_size, out_size))
+        return nn.Sequential(*layers)
 
-        # (4) Value network (critic)
-        #     - structure: similar to policy network
-        #     - input: (batch_size, embed_dim)
-        #     - output: (batch_size, 1)
-        value_layers = []
-        in_size = self.cfg.embed_dim
-        for out_size in self.cfg.value_hidden_sizes:
-            value_layers.append(nn.Linear(in_size, out_size))
-            value_layers.append(nn.ReLU())
-            in_size = out_size
-        value_layers.append(nn.Linear(in_size, 1))
-        # Build the value network
-        # Output shape: (batch_size, 1)
-        self.critic = nn.Sequential(*value_layers)
-        self._value_out = None  # store this for value_function() in forward()
+    def _build_shared_nets(self):
+        """is_shared_net=True 일 때(기존 로직)."""
+        # -- encoder
+        obs_space_images = self.obs_space.original_space["images"]
+        input_channel_size = obs_space_images.shape[0]
+        self.encoder = self._build_encoder(input_channel_size)
+        self._conv_out_flattened_size = self._get_conv_out_size(
+            self.encoder, (input_channel_size, obs_space_images.shape[1], obs_space_images.shape[2])
+        )
 
-    # def _validate_config(self) -> Dict[str, Union[str, int, float, bool]]:
-    #     return NotImplementedError
+        # -- embedding
+        drone_state_size = self.obs_space.original_space["drone_state"].shape[0]
+        encoder_plus_drone_dim = self._conv_out_flattened_size + drone_state_size
+        self.embedding = self._build_embedding(encoder_plus_drone_dim)
+
+        # -- policy net
+        self.policy = self._build_fc_layers(
+            in_size=self.cfg.embed_dim,
+            hidden_sizes=self.cfg.policy_hidden_sizes,
+            out_size=self.num_outputs
+        )
+
+        # -- value net
+        self.critic = self._build_fc_layers(
+            in_size=self.cfg.embed_dim,
+            hidden_sizes=self.cfg.value_hidden_sizes,
+            out_size=1
+        )
+
+    def _build_separate_nets(self):
+        """is_shared_net=False 일 때, actor와 critic의 Conv-Encoder/Embedding까지 분리."""
+        obs_space_images = self.obs_space.original_space["images"]
+        input_channel_size = obs_space_images.shape[0]
+        drone_state_size = self.obs_space.original_space["drone_state"].shape[0]
+
+        # === Actor ===
+        self.actor_encoder = self._build_encoder(input_channel_size)
+        conv_out_actor = self._get_conv_out_size(
+            self.actor_encoder, (input_channel_size, obs_space_images.shape[1], obs_space_images.shape[2])
+        )
+        self.actor_embedding = self._build_embedding(conv_out_actor + drone_state_size)
+        self.actor_policy = self._build_fc_layers(
+            in_size=self.cfg.embed_dim,
+            hidden_sizes=self.cfg.policy_hidden_sizes,
+            out_size=self.num_outputs
+        )
+
+        # === Critic ===
+        self.critic_encoder = self._build_encoder(input_channel_size)
+        conv_out_critic = self._get_conv_out_size(
+            self.critic_encoder, (input_channel_size, obs_space_images.shape[1], obs_space_images.shape[2])
+        )
+        self.critic_embedding = self._build_embedding(conv_out_critic + drone_state_size)
+        self.critic_value = self._build_fc_layers(
+            in_size=self.cfg.embed_dim,
+            hidden_sizes=self.cfg.value_hidden_sizes,
+            out_size=1
+        )
 
     def forward(
             self,
@@ -208,65 +429,79 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         # Choose the appropriate context manager based on your config flag.
         cm = torch.autograd.set_detect_anomaly(True) if self.cfg.use_anomaly_detection else contextlib.nullcontext()
         with cm:
-
-            batch_size = input_dict["obs"]["images"].shape[0]
-
             obs_dict = input_dict["obs"]
-            stacked_images = obs_dict["images"]  # shape: (batch_size, 4, 84, 84)
-            if self.cfg.ru_debugging:
-                if self.cfg.eval_mode:
-                    assert stacked_images.dtype in [torch.uint8, torch.float32], f"stacked_images.dtype: {stacked_images.dtype}"
-                    # Type casting: not mandatory, but for readability (i.e. it's automatically done when normalized)
-                    stacked_images = stacked_images.float() if stacked_images.dtype == torch.uint8 else stacked_images
-                else:
-                    assert stacked_images.dtype == torch.float32, f"stacked_images.dtype: {stacked_images.dtype}"
-            stacked_images /= 255.0  # Normalize the images
-            drone_state = obs_dict["drone_state"]  # shape: (batch_size, 10)
+            images = obs_dict["images"]
+            drone_state = obs_dict["drone_state"]
+            batch_size = images.shape[0]
 
-            # (1) Encoder forward
-            enc_out = self.encoder(stacked_images)               # (batch_size, C, H, W)
-            enc_out_flattened = enc_out.view(enc_out.shape[0], -1)                     # (batch_size, C'*H'*W'==conv_out_dim)
-            if self.cfg.ru_debugging:
-                assert enc_out_flattened.ndim == 2, f"Encoder output enc_out_flattened: Not a 2D tensor!!\n  enc_out.shape: {enc_out_flattened.shape}"
-            enc_out_flattened_cat = torch.cat([enc_out_flattened, drone_state], dim=1)  # (batch_size, conv_out_dim + 10)
+            # PPO에서 forward는 actor 쪽(정책 logits)만 우선 계산
+            if self.cfg.eval_mode:
+                # 평가 시에는 uint8 -> float 변환 등
+                images = images.float() if images.dtype == torch.uint8 else images
+            # 학습 시에는 보통 이미지가 이미 float32로 전처리되어 들어온다고 가정
+            # images /= 255.0
+            images = images.div(255.0)  # avoid in-place operation (may cause error for gradient calculation in PyTorch)
 
-            # (2) Embedding
-            x_embd = self.embedding(enc_out_flattened_cat)  # (batch_size, embed_dim)
+            if self.cfg.is_shared_net:
+                # === (공유 네트워크) 기존 로직 ===
+                enc_out = self.encoder(images)
+                enc_out_flat = enc_out.view(enc_out.shape[0], -1)
+                emb_in = torch.cat([enc_out_flat, drone_state], dim=1)
+                x_embd = self.embedding(emb_in)
+                logits = self.policy(x_embd)
+                # critic 값도 여기서 바로 구해둔다.
+                self._value_out = self.critic(x_embd)
+            else:
+                # === (분리 네트워크) actor 경로만 계산 ===
+                actor_enc_out = self.actor_encoder(images)
+                actor_enc_out_flat = actor_enc_out.view(actor_enc_out.shape[0], -1)
+                actor_emb_in = torch.cat([actor_enc_out_flat, drone_state], dim=1)
+                actor_emb = self.actor_embedding(actor_emb_in)
+                logits = self.actor_policy(actor_emb)
+                # critic은 forward() 안에서 계산하지 않음
+                self._value_out = None
 
-            # (3) Policy (actor) forward
-            logits = self.policy(x_embd)  # (batch_size, num_outputs)
+                # critic forward에 필요한 obs를 저장해둔다(value_function()에서 사용)
+                self._current_obs = obs_dict
 
-            # (4) Value (critic) forward
-            self._value_out = self.critic(x_embd)  # (batch_size, 1)
-
-            # (5) Check for NaN/Inf in the output
-            if self.cfg.ru_debugging and batch_size == 512:
+            if self.cfg.ru_debugging and batch_size == 512 and not self.cfg.is_shared_net:
                 if torch.isnan(logits).any():
-                    print(f"@@@@@@@@@@@@@ stacked_images (nan): {torch.isnan(stacked_images).sum()}")
+                    print(f"@@@@@@@@@@@@@ images (nan): {torch.isnan(images).sum()}")
                     print(f"@@@@@@@@@@@@@ drone_state (nan): {torch.isnan(drone_state).sum()}")
-                    print(f"@@@@@@@@@@@@@ enc_out (nan): {torch.isnan(enc_out).sum()}")
-                    print(f"@@@@@@@@@@@@@ enc_out_flattened (nan): {torch.isnan(enc_out_flattened).sum()}")
-                    print(f"@@@@@@@@@@@@@ enc_out_flattened_cat (nan): {torch.isnan(enc_out_flattened_cat).sum()}")
-                    print(f"@@@@@@@@@@@@@ x_embd (nan): {torch.isnan(x_embd).sum()}")
+                    print(f"@@@@@@@@@@@@@ actor_enc_out (nan): {torch.isnan(actor_enc_out).sum()}")
+                    print(f"@@@@@@@@@@@@@ actor_enc_out_flat (nan): {torch.isnan(actor_enc_out_flat).sum()}")
+                    print(f"@@@@@@@@@@@@@ actor_emb_in (nan): {torch.isnan(actor_emb_in).sum()}")
+                    print(f"@@@@@@@@@@@@@ actor_emb (nan): {torch.isnan(actor_emb).sum()}")
                     print(f"@@@@@@@@@@@@@ logits (nan): {torch.isnan(logits).sum(axis=0)}")
-                    print(f"@@@@@@@@@@@@@ self._value_out (nan): {torch.isnan(self._value_out).sum()}")
+                    # print(f"@@@@@@@@@@@@@ self._value_out (nan): {torch.isnan(self._value_out).sum()}")
                     print("logits에서 NaN 발생!")
                 if torch.isinf(logits).any():
                     raise ValueError("logits에서 Inf 발생!")
 
-            # # print: log_std vals
-            # num_outputs = logits.shape[1]
-            # assert num_outputs % 2 == 0, f"num_outputs({num_outputs}) is not even!"
-            # num_std_vals = num_outputs // 2
-            # log_std_vals = logits[:, num_std_vals:]
-            # print(f"Average log_std vals: {log_std_vals.mean(axis=0)}")
-            # # print(f"Std of log_std vals: {log_std_vals.std(axis=0)}")
-
             return logits, state
 
     def value_function(self) -> TensorType:
-        """
-        forward()에서 계산된 self._value_out의 shape: (batch_size, 1).
-        """
-        assert self._value_out is not None, "Value head has not been computed yet!"
-        return self._value_out.squeeze(-1)  # (batch_size,)
+        """RLlib이 정책 네트워크 forward 이후 호출하는 함수."""
+        if self.cfg.is_shared_net:
+            # 공유 네트워크라면 forward()에서 self._value_out을 이미 계산해 둠
+            assert self._value_out is not None, "value_function() called before forward()?"
+            return self._value_out.squeeze(-1)
+        else:
+            # 분리 네트워크라면 여기서 critic 경로를 다시 계산
+            assert self._current_obs is not None, "value_function() called before forward()?"
+            images = self._current_obs["images"]
+            drone_state = self._current_obs["drone_state"]
+
+            if self.cfg.eval_mode:
+                images = images.float() if images.dtype == torch.uint8 else images
+            # images /= 255.0
+            images = images.div(255.0)  # avoid in-place operation (may cause error for gradient calculation in PyTorch)
+
+            critic_enc_out = self.critic_encoder(images)
+            critic_enc_out_flat = critic_enc_out.view(critic_enc_out.shape[0], -1)
+            critic_emb_in = torch.cat([critic_enc_out_flat, drone_state], dim=1)
+            critic_emb = self.critic_embedding(critic_emb_in)
+            value_out = self.critic_value(critic_emb)
+
+            return value_out.squeeze(-1)
+
