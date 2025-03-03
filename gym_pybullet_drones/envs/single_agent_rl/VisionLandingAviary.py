@@ -74,7 +74,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  img_fps: int = 30,
                  episode_len_sec: float = 30.0,   # 에피소드 길이 (초)
                  include_drone_state: bool = True,
-                 include_action_in_obs: bool = True,
+                 include_actions_in_obs: bool = True,
                  difficulty: int = 4,
                  curriculum_configs: dict = None,
                  # **kwargs, # Enable this ONLY IF you need additional arguments as a workaround (e.g. curriculum plans)
@@ -86,6 +86,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             assert "plans" in curriculum_configs, "Plans should be provided in the curriculum_configs."
 
         assert include_drone_state, "Currently, include_drone_state == False is not supported."
+        self._include_actions_in_obs = include_actions_in_obs
         self.stack_size = stack_size  # used in _observationSpace(), which is called in super().__init__()
         this_file_dir = os.path.dirname(os.path.realpath(__file__))
         self.assets_path = os.path.join(this_file_dir, "../../assets")
@@ -137,8 +138,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # 버퍼를 채워 넣음 (원하는 경우 dummy_frame.copy() 사용)
         self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
         # 드론 상태 버퍼 초기화: list of np.ndarray (7, or 10,)
-        self._include_action_in_obs = include_action_in_obs
-        drone_state_len = 10 if self._include_action_in_obs else 7
+        drone_state_len = 10 if self._include_actions_in_obs else 7
         dummy_state = np.zeros(drone_state_len, dtype=np.float32)
         self.state_buffer = [dummy_state.copy() for _ in range(self.stack_size)]
 
@@ -359,10 +359,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         - actions are optionally included in the state (based on self._include_action_in_obs)
         """
         # 1. Get drone state and check its shape
-        if self._include_action_in_obs:
-            state = np.hstack([self.quat[0, :], self.vel[0, :]])
-        else:
+        if self._include_actions_in_obs:
             state = np.hstack([self.quat[0, :], self.vel[0, :], self.last_action_vel])
+        else:
+            state = np.hstack([self.quat[0, :], self.vel[0, :]])
         assert state.shape == (7,) or state.shape == (10,), f"Invalid drone state shape: {state.shape}"
 
         # 2. Update the state buffer
@@ -410,10 +410,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             image_shape = (height, width, channels * self.stack_size)
 
         # Make sure to let the type of 'state_shape' be a tuple
-        state_shape = (10 * self.stack_size,) if self._include_action_in_obs else (7 * self.stack_size,)
+        state_shape = (10 * self.stack_size,) if self._include_actions_in_obs else (7 * self.stack_size,)
 
         return spaces.Dict({"images": spaces.Box(low=0, high=255, shape=image_shape, dtype=np.uint8),
-                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=state_shape, dtype=np.float64)})
+                            "drone_states": spaces.Box(low=-np.inf, high=np.inf, shape=state_shape, dtype=np.float64)})
 
     def _actionSpace(self):
         """Returns the action space of the environment.
@@ -577,10 +577,10 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         drone_altitude = self.pos[0, 2]
 
         if drone_altitude >= self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
-            print(' @@  VisionLandingAviary env: Landed!')
+            print(' @ [VisionLandingAviary] env: Landed!')
             return 180.0
         elif drone_altitude < self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
-            print(' @@  VisionLandingAviary env: Crashed!')
+            print(' @ [VisionLandingAviary] env: Crashed!')
             if no_crash_penalty:
                 return 0.0
             else:
@@ -699,14 +699,14 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         - 드론이 다른 것과 충돌하면 done
         - 에피소드 시간 초과 (self.EPISODE_LEN_SEC)
         """
-        # 드론이 다른것과 충돌하면 done
-        # Note: 땅과 충돌해도 끝남;;
+        # 드론이 다른것과 충돌하면 done; Note: 땅과 충돌해도 끝남;;
         if p.getContactPoints(bodyA=1, physicsClientId=self.CLIENT) != ():
             return True
         # 에피소드 시간 초과
         # Note: self.step_counter hasn't been updated in step() yet;
         #       So, it is smaller than actual step count by self.AGGR_PHY_STEPS at this line.
         if (self.step_counter + self.AGGR_PHY_STEPS) >= self.EPISODE_LEN_SEC * self.SIM_FREQ:
+            print(' @ [VisionLandingAviary] env: Episode time out!')
             return True
 
         return False

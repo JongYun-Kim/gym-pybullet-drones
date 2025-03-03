@@ -116,10 +116,10 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
 
         # [3] Get input/output sizes
         input_channel_size = obs_space_images.shape[0]  # assumes C,H,W; channel first
-        drone_state_size = obs_space_drone_state.shape[0]
+        drone_states_size = obs_space_drone_state.shape[0]  # assumes 1D;
         action_size = action_space.shape[0]
         if self.cfg.ru_debugging:
-            self._validate_io_sizes(input_channel_size, drone_state_size, action_size, num_outputs)
+            self._validate_io_sizes(input_channel_size, drone_states_size, action_size, num_outputs)
 
         # [4] Build networks
         # [4-1] Actor encoder/embedding
@@ -130,7 +130,7 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             self.cfg.strides
         )
         combined_size = self._get_combined_size(self.actor_encoder, input_channel_size,
-                                                obs_space_images.shape[1], obs_space_images.shape[2], drone_state_size)
+                                                obs_space_images.shape[1], obs_space_images.shape[2], drone_states_size)
         self.actor_embedding = build_embedding(
             combined_size,
             self.cfg.embed_dim,
@@ -178,15 +178,16 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             assert isinstance(cfg, VisionLanderPPOConfig), \
                 f"model_config['custom_model_config'] is not VisionLanderPPOConfig. It is {type(cfg)}."
         if cfg.ru_debugging:
-            if self.cfg.is_shared_net:
-                print("Creating a SHARED network for actor and critic")
+            if cfg.is_shared_net:
+                print("[VisionLanderPPO] - Creating a SHARED network for actor and critic")
             else:
-                print("Creating SEPARATE networks for actor and critic")
+                print("[VisionLanderPPO] - Creating SEPARATE networks for actor and critic")
         return cfg
 
-    def _validate_io_sizes(self, input_channel_size, drone_state_size, action_size, num_outputs):
+    def _validate_io_sizes(self, input_channel_size, drone_states_size, action_size, num_outputs):
+        # Sorry 4 the magic numbers; update them as needed
         assert input_channel_size == 4, f"input_channel_size isn't 4! It is {input_channel_size}."
-        assert drone_state_size == 7 or drone_state_size ==10, f"drone_state_size is not 7|10! It's {drone_state_size}."
+        assert drone_states_size in [28, 40], f"drone_state_size is not 28|40! It's {drone_states_size}."
         assert action_size == 3, f"action_size is not 3! It is {action_size}."
         assert num_outputs == 2 * action_size, \
             f"num_outputs is not 2 * action_size! It is {num_outputs} and action_size is {action_size}."
