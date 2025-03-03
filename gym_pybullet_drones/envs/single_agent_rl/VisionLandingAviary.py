@@ -77,6 +77,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  include_actions_in_obs: bool = True,
                  difficulty: int = 4,
                  curriculum_configs: dict = None,
+                 reward_params: list = None,
                  # **kwargs, # Enable this ONLY IF you need additional arguments as a workaround (e.g. curriculum plans)
                  ):
         # Curriculum learning settings
@@ -84,6 +85,17 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         if curriculum_configs is not None:
             assert "metric" in curriculum_configs, "Metric should be provided in the curriculum_configs."
             assert "plans" in curriculum_configs, "Plans should be provided in the curriculum_configs."
+
+        # Reward params
+        # # [landing, crash, visibility, hv_scale, hv_ratio]
+        assert reward_params is not None, "Reward params should be provided."
+        assert len(reward_params) == 6, "Reward params should be a list of 5 elements."
+        self.landing_reward = reward_params[0]
+        self.crash_penalty = reward_params[1]
+        self.visibility_penalty = reward_params[2]
+        self.hv_scale = reward_params[3]
+        self.hv_ratio = reward_params[4]
+        self.time_penalty = reward_params[5]
 
         assert include_drone_state, "Currently, include_drone_state == False is not supported."
         self._include_actions_in_obs = include_actions_in_obs
@@ -359,10 +371,12 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         - actions are optionally included in the state (based on self._include_action_in_obs)
         """
         # 1. Get drone state and check its shape
+        q = self.quat[0, :]  # (4,)
+        v_n = self.vel[0, :]/self.SPEED_LIMIT  # (3,); normalized velocity
         if self._include_actions_in_obs:
-            state = np.hstack([self.quat[0, :], self.vel[0, :], self.last_action_vel])
+            state = np.hstack([q, v_n, self.last_action_vel])  # np.hstack: returns new copy
         else:
-            state = np.hstack([self.quat[0, :], self.vel[0, :]])
+            state = np.hstack([q, v_n])
         assert state.shape == (7,) or state.shape == (10,), f"Invalid drone state shape: {state.shape}"
 
         # 2. Update the state buffer
@@ -526,9 +540,17 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         reward_horizontal_dist = self._compute_horizontal_dist_reward()
 
         # 5. Combine rewards
-        reward = 0.18 * reward_horizontal_dist + 0.15 * reward_vertical_velocity
+        reward = self.hv_scale * (self.hv_ratio * reward_horizontal_dist + (1-self.hv_ratio) * reward_vertical_velocity)
         reward += reward_visibility + reward_landing_or_crashing
+
+        # 6. Time penalty
+        reward += self.time_penalty
+
         return reward
+
+    def _my_reward_function(self):
+
+        return NotImplementedError
 
     def set_difficulty(self, new_diff: int):
         """This setter is provided to change the difficulty during the training."""
@@ -542,7 +564,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         rel_xy_dist = np.linalg.norm(self.pos[0, 0:2] - self._get_pad_center_position()[0:2])
 
         # Compute reward
-        rel_xy_thresh = 10.0
+        rel_xy_thresh = 8.0
         rho = 30.0
         normalized_rel_xy_dist = (rel_xy_thresh - rel_xy_dist) / rel_xy_thresh
         if normalized_rel_xy_dist > 0:  # within the threshold
@@ -552,23 +574,23 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
     def _compute_vertical_velocity_reward(self):
         alpha = 30.0
-        desired_z_vel = -0.5
+        desired_z_vel = -0.5  # m/s
         assert abs(desired_z_vel) < self.SPEED_LIMIT[2], "Desired z velocity should be within the speed limit."
 
         drone_z_vel = self.vel[0, 2]  # z velocity
 
         # (1) Move too fast
         if abs(drone_z_vel) / self.SPEED_LIMIT[2] > 1.1:
-            return 0.0
+            return -1  # 0.0
         # (2) Ascending, which isn't desired
         if drone_z_vel > 0:
-            return -0.1
+            return -0.2  # -0.1
         # (3) Safe descending: max reward at the desired z-velocity
         if desired_z_vel < drone_z_vel <= 0:
             return (alpha ** (drone_z_vel / desired_z_vel) - 1) / (alpha - 1)
         # (4) Descending faster than desired
         elif drone_z_vel <= desired_z_vel:
-            return -0.01
+            return -0.05  # -0.01
         else:
             raise "VisionLandingAviary env._compute_vertical_velocity_reward(): This should not happen!"
 
@@ -578,13 +600,13 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         if drone_altitude >= self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
             print(' @ [VisionLandingAviary] env: Landed!')
-            return 180.0
+            return self.landing_reward
         elif drone_altitude < self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
             print(' @ [VisionLandingAviary] env: Crashed!')
             if no_crash_penalty:
                 return 0.0
             else:
-                return -1.0
+                return self.crash_penalty  # -1.0
         else:  # Hasn't landed or crashed yet
             return 0.0
 
@@ -597,7 +619,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             return 0.0
         else:
             # print("  !!  [VisionLandingAviary] env: Out of LOS!")
-            return -0.01
+            return self.visibility_penalty  # -0.01
 
     def _check_los_camera_polygon_vs_pad_box(self):
         """

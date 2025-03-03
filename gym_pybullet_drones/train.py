@@ -1,13 +1,10 @@
-from gc import enable
-
 import ray
 from ray import tune
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
-# from ray.rllib.models.torch.torch_action_dist import TorchSquashedGaussian
 
-from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary, VisionLandingAviaryLCfirst
+from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary
 from gym_pybullet_drones.models.vision_landing_model import VisionLanderPPO, VisionLanderPPOConfig
 
 from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
@@ -15,6 +12,7 @@ from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import Obser
 import numpy as np
 
 from utils.utils_my_rllib import create_multi_callbacks_from_classes
+import copy
 
 # TODOs
 # - [ ] Add evaluation during training
@@ -24,15 +22,18 @@ from utils.utils_my_rllib import create_multi_callbacks_from_classes
 class LogGradAndWeightStatsCallbacks(DefaultCallbacks):
     def on_train_result(self, *, algorithm, result: dict, **kwargs):
         # Access the model from the policy
-        model = algorithm.get_policy().model
+        # model = algorithm.get_policy().model
+        model: VisionLanderPPO = algorithm.get_policy().model
 
         # Safeguard "custom_metrics" in result
         if "custom_metrics" not in result:
             result["custom_metrics"] = {}
 
         modules_to_monitor = {
-            "encoder": model.encoder,
-            "embedding": model.embedding,
+            "actor_encoder": model.actor_encoder,
+            "critic_encoder": model.critic_encoder,
+            "actor_embedding": model.actor_embedding,
+            "critic_embedding": model.critic_embedding,
         }
         for module_name, module in modules_to_monitor.items():
             # Ensure a nested dict exists for this module_name
@@ -112,6 +113,40 @@ class CurriculumCallbacks(DefaultCallbacks):
             print(f" @@@   [{self.__class__.__name__}] reaches the max difficulty {len(self.difficulty_plans) + 1}   @@@\n")
         return len(self.difficulty_plans) + 1
 
+
+def get_env_configs(default_env_config):
+    reward_params_variants = [
+        # [landing, crash, viz,   scale, ratio, time]
+        [180.0,    -1.0,   -0.01, 1.6,   0.375,  0.0],
+        [180.0,    -1.0,   -0.01, 1.6,   0.375, -0.4],
+        [10.0,     -1.0,   -0.05,  0.05,  0.5,    0.0],
+        [10.0,     -10.0,  -0.05,  0.05,  0.5,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.05,  0.4,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.05,  0.5,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.05,  0.6,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.1,   0.4,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.1,   0.5,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.1,   0.6,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.01,  0.4,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.01,  0.5,   -0.01],
+        [10.0,     -1.0,   -0.05,  0.01,  0.6,   -0.01],
+    ]
+    configs = [default_env_config]
+    for params in reward_params_variants:
+        new_config = copy.deepcopy(default_env_config)
+        new_config["reward_params"] = params
+        configs.append(new_config)
+        #
+        assert len(params) == 6
+        assert params[0] > 0
+        assert params[1] < 0
+        assert params[2] < 0
+        assert params[3] > 0
+        assert 0 < params[4] < 1
+        assert params[5] <= 0
+    return configs
+
+
 if __name__ == "__main__":
 
     # [0] Run flags
@@ -125,8 +160,8 @@ if __name__ == "__main__":
         print(f"\n!!! Curriculum learning is {'ENABLED' if enable_curriculum_learning else 'DISABLED'}")
         print(f"!!!   Make sure if you want to enable 'CURRICULUM LEARNING' or not.")
     # # [0-3] log grad and weight stats
-    enable_log_grad_and_weight_stats = True
-    # enable_log_grad_and_weight_stats = False
+    # enable_log_grad_and_weight_stats = True
+    enable_log_grad_and_weight_stats = False
 
     # [1] Ray init
     ray.init(local_mode=enable_ray_local_mode_for_debugging)
@@ -179,20 +214,22 @@ if __name__ == "__main__":
         "img_fps": 30,
         "episode_len_sec": 15.0,  # episode length in "seconds" (float!)
         "include_drone_state": True,
+        "include_actions_in_obs": True,
         "difficulty": 1 if enable_curriculum_learning else 4,
         "curriculum_configs": curriculum_configs,
+        "reward_params": [140.0, -1.0, -0.01, 1.6, 0.375, 0.0],
     }
-    # env_name = "vision_landing_aviary_env"
-    # register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
-    env_name = "vision_landing_aviary_env_lc_first"
-    register_env(env_name, lambda cfg: VisionLandingAviaryLCfirst(**cfg))
+    env_configs_reward_test = get_env_configs(env_config)
+    env_name = "vision_landing_aviary_env"
+    register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
 
     # [4] Model
     # Set up custom model configuration
     my_config_instance = VisionLanderPPOConfig()
     my_config_instance.ru_debugging = True
     my_config_instance.use_layer_norm = True
-    my_config_instance.use_anomaly_detection = True
+    my_config_instance.use_anomaly_detection = False
+    my_config_instance.is_shared_net = False
     custom_model_config = {
         "config_instance": my_config_instance,
         "config_in_dict": my_config_instance.to_dict(),
@@ -200,24 +237,24 @@ if __name__ == "__main__":
     # Register your custom model
     model_name = "vision_lander_ppo"
     ModelCatalog.register_custom_model(model_name, VisionLanderPPO)
-    # ModelCatalog.register_custom_action_dist("squashed_gaussian", TorchSquashedGaussian)
 
     # [5] Train
     tune.run(
         "PPO",
-        # name="hyprprm_tune-250220",
-        name="los_and_control_test_250226",
+        # name="can_it_stop_test",
+        name="rwd_set_test", #0301: reward balanced 0.18h 0.15v,
         local_dir="~/temps/debugging_only",
         # resume=True,
         # stop={"episode_reward_mean": -101},
-        # stop={"training_iteration": 300},
+        stop={"training_iteration": 128},
         checkpoint_freq=5,
         keep_checkpoints_num=16,
         checkpoint_at_end=True,
         checkpoint_score_attr="episode_reward_mean",
         config={
             "env": env_name,
-            "env_config": env_config,
+            # "env_config": env_config,
+            "env_config": tune.grid_search(env_configs_reward_test),
             "framework": "torch",
             #
             "callbacks": multi_callbacks,
@@ -236,7 +273,7 @@ if __name__ == "__main__":
             "num_sgd_iter": 19,
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
-            "lr": 4e-5,
+            "lr": 1e-4,
             # "lr_schedule": [[0,     5e-5],
             #                 [2e5,   3e-5],
             #                 [2.5e5, 2.8e-5],
@@ -247,10 +284,10 @@ if __name__ == "__main__":
             #                 [1e6,   8e-6],
             #                 ],
             # Must be fine-tuned when sharing vf-policy layers
-            "vf_loss_coeff": tune.grid_search([0.02, 0.009, 0.005]),
+            "vf_loss_coeff": 0.5,
             "use_critic": True,
             "use_gae": True,
-            "gamma": 0.991,
+            "gamma": 0.99,
             "lambda": 0.96,
             "kl_coeff": 0,  # no PPO penalty term; we use PPO-clip anyway; if none zero, be careful Nan in tensors!
             # "entropy_coeff": tune.grid_search([0, 0.001, 0.0025, 0.01]),
@@ -264,9 +301,9 @@ if __name__ == "__main__":
             #                            [2e6, 0],
             #                            ],
             "clip_param": 0.21,  # 0.3
-            "vf_clip_param": 200,
+            "vf_clip_param": 256,
             # "grad_clip": None,
-            "grad_clip": 10.0,
+            "grad_clip": 8.0,
             "kl_target": 0.01,
         },
     )
