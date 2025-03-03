@@ -50,7 +50,6 @@ from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import BaseS
 from gym_pybullet_drones.envs.BaseAviary import DroneModel, Physics
 from gym_pybullet_drones.envs.BaseAviary import ImageType  # onboard 이미지 저장에 사용
 from gym_pybullet_drones.utils.utils import rgb2gray
-import subprocess
 from scipy.spatial.transform import Rotation
 from gym_pybullet_drones.utils.utils_geometry import project_point_on_pad_plane, inside_pad_box, order_points_convex_polygon, polygons_intersect_2d, line_plane_intersection
 from gym_pybullet_drones.utils.utils_ffmpeg import convert_images_to_video
@@ -75,6 +74,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
                  img_fps: int = 30,
                  episode_len_sec: float = 30.0,   # 에피소드 길이 (초)
                  include_drone_state: bool = True,
+                 include_action_in_obs: bool = True,
                  difficulty: int = 4,
                  curriculum_configs: dict = None,
                  # **kwargs, # Enable this ONLY IF you need additional arguments as a workaround (e.g. curriculum plans)
@@ -136,6 +136,11 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # 버퍼를 채워 넣음 (원하는 경우 dummy_frame.copy() 사용)
         self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
+        # 드론 상태 버퍼 초기화: list of np.ndarray (7, or 10,)
+        self._include_action_in_obs = include_action_in_obs
+        drone_state_len = 10 if self._include_action_in_obs else 7
+        dummy_state = np.zeros(drone_state_len, dtype=np.float32)
+        self.state_buffer = [dummy_state.copy() for _ in range(self.stack_size)]
 
     def _get_random_drone_pose(self, initial_xyzs=None, initial_rpys=None):
         """
@@ -323,7 +328,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         ...
         return rgb, dep, seg
 
-    def _get_stacked_obs(self, rgb):
+    def _get_stacked_images(self, rgb):
         """
         프레임 버퍼에 저장된 최신 이미지들을 채널 방향으로 이어붙여 stacked observation 생성.
         예: 각 프레임이 (H, W, 3)이라면 stacked_obs의 shape는 (H, W, 3*stack_size)가 됨.
@@ -347,30 +352,44 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         channel_axis = 0 if self.channel_first else -1
         return np.concatenate(self.frame_buffer, axis=channel_axis)
 
+    def _get_stacked_state(self):
+        """
+        Returns the stacked drone state.
+        - drone state used: [qx, qy, qz, qw, vx, vy, vz, (vx_cmd, vy_cmd, vz_cmd)]
+        - actions are optionally included in the state (based on self._include_action_in_obs)
+        """
+        # 1. Get drone state and check its shape
+        if self._include_action_in_obs:
+            state = np.hstack([self.quat[0, :], self.vel[0, :]])
+        else:
+            state = np.hstack([self.quat[0, :], self.vel[0, :], self.last_action_vel])
+        assert state.shape == (7,) or state.shape == (10,), f"Invalid drone state shape: {state.shape}"
+
+        # 2. Update the state buffer
+        self.state_buffer.pop(0)
+        self.state_buffer.append(state)
+        # 3. Stack the state buffer (flattened)
+        stacked_state = np.concatenate(self.state_buffer, axis=0)
+
+        return stacked_state
+
     def _computeObs(self):
         """
-        매 스텝마다 호출되어 observation을 생성함.
-          - 드론 카메라 이미지(RGB)를 받아 (알파 채널 제외) 새로운 프레임 생성
-          - 프레임 버퍼를 업데이트(가장 오래된 프레임 제거 후 새 프레임 추가)
-          - record=True인 경우, PNG 파일로 onboard 이미지를 저장함
-          - stack된 이미지를 반환
+        Returns the observation of the environment.
+            - Gets the drone camera image (RGB) and creates a new frame
+            - Updates the drone state buffer and image buffer
+            - If record=True, saves the onboard image as a PNG file
         """
         rgb, _, _ = self._getDroneImages(0, segmentation=False)
-        # rgb, _, _ = self._getDroneImagesWithOrientation(0, segmentation=False)
 
-        # onboard 이미지 저장 (record=True이면)
+        # Save onboard image (if record=True)
         if self.RECORD and (self.step_counter % self.IMG_CAPTURE_FREQ == 0):
             self._exportImage(img_type=ImageType.BW if self.use_gray_scale else ImageType.RGB,
                               img_input=rgb,
                               path=self.ONBOARD_IMG_PATH,
                               frame_num=int(self.step_counter/self.IMG_CAPTURE_FREQ))
 
-        # 드론 상태 정보 (linear vel, angular vel, orientation)를 추가하여 observation 반환
-        state = np.hstack([self.quat[0, :], self.vel[0, :], self.last_action_vel])
-        assert state.shape == (10,), f"Invalid drone_state shape in _computeObs: {state.shape}"
-
-        return {"images": self._get_stacked_obs(rgb), "drone_state": state}
-        # return self._get_stacked_obs(rgb)
+        return {"images": self._get_stacked_images(rgb), "drone_state": self._get_stacked_state()}
 
     def _observationSpace(self):
         """
@@ -386,13 +405,15 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         channels = 1 if self.use_gray_scale else 3
 
         if self.channel_first:
-            shape = (channels * self.stack_size, height, width)
+            image_shape = (channels * self.stack_size, height, width)
         else:
-            shape = (height, width, channels * self.stack_size)
+            image_shape = (height, width, channels * self.stack_size)
 
-        return spaces.Dict({"images": spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8),
-                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=(10,), dtype=np.float64)})
-        # return spaces.Box(low=0, high=255, shape=shape, dtype=np.uint8)
+        # Make sure to let the type of 'state_shape' be a tuple
+        state_shape = (10 * self.stack_size,) if self._include_action_in_obs else (7 * self.stack_size,)
+
+        return spaces.Dict({"images": spaces.Box(low=0, high=255, shape=image_shape, dtype=np.uint8),
+                            "drone_state": spaces.Box(low=-np.inf, high=np.inf, shape=state_shape, dtype=np.float64)})
 
     def _actionSpace(self):
         """Returns the action space of the environment.
@@ -489,15 +510,15 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             raise ValueError(f"Invalid curriculum difficulty: {self.difficulty}")
 
     def _vanilla_reward_function(self):
-        # 1. Check visibility
-        reward_visibility = self._compute_reward_visibility()
-        if reward_visibility < 0:
-            return reward_visibility
-
         # 2. Check Landing/Crashing
         reward_landing_or_crashing = self._compute_reward_landing_or_crashing()
         if reward_landing_or_crashing < 0:
             return reward_landing_or_crashing
+
+        # 1. Check visibility
+        reward_visibility = self._compute_reward_visibility()
+        if reward_visibility < 0:
+            return reward_visibility
 
         # 3. Compute vertical velocity reward (safety)
         reward_vertical_velocity = self._compute_vertical_velocity_reward()
@@ -505,7 +526,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         reward_horizontal_dist = self._compute_horizontal_dist_reward()
 
         # 5. Combine rewards
-        reward = 0.6 * reward_horizontal_dist + 1.0 * reward_vertical_velocity
+        reward = 0.18 * reward_horizontal_dist + 0.15 * reward_vertical_velocity
         reward += reward_visibility + reward_landing_or_crashing
         return reward
 
@@ -821,135 +842,16 @@ class VisionLandingAviary(BaseSingleAgentAviary):
     def convert_onboard_images_to_video(self, output_file="onboard_video.mp4", fps=30):
         convert_images_to_video(self.ONBOARD_IMG_PATH, output_file, fps=fps, pattern="frame_%d.png")
 
-    # About to deprecated
-    def _check_los(self, pad_position):
-        """
-        Returns True if the drone has line-of-sight to the pad; otherwise, False.
-        """
-        drone_pos = self.pos[0, :]          # shape: (3,)
-        drone_quat = self.quat[0, :]        # shape: (4,) 가정: (x, y, z, w) 또는 (w, x, y, z)
-
-        # 월드 좌표계에서 타겟 벡터
-        target_vec_world = pad_position - drone_pos  # shape: (3,)
-
-        # 쿼터니언 → 회전행렬(또는 Rotation 객체)
-        # Scipy는 기본적으로 [x, y, z, w] 순서를 받음. (만약 [w, x, y, z]라면 순서 맞춰야 함)
-        rot_world_to_drone = Rotation.from_quat(drone_quat)
-
-        # 월드 → 드론 바디로 벡터 변환
-        target_vec_drone = rot_world_to_drone.inv().apply(target_vec_world)
-
-        # 드론 바디에서 카메라가 -Z 방향을 본다고 가정하므로,
-        # z가 음수이면 카메라가 바라보는 '앞쪽(아래쪽)'에 위치하게 됨
-        x_d = target_vec_drone[0]
-        y_d = target_vec_drone[1]
-        z_d = target_vec_drone[2]
-
-        # 카메라가 -Z쪽을 본다고 할 때, z_d가 양수라면 카메라의 "뒷면"에 있는 것
-        if z_d > 0:
-            return False
-
-        # FOV 체크
-        # 수평/수직 시야각이 self.fov로 동일하다고 할 때,
-        # x, y 각 축에 대해 시야각을 초과하는지 확인하면 됨.
-        # 각도 계산은 arctan2(수평방향, 종방향) 사용
-        # z축이 음수이므로 -z_d를 분모로 사용 (z_d가 음수이므로 -z_d는 양수)
-        half_fov = self.fov / 2.0
-
-        # arctan2의 결과에 abs()를 취해서 카메라 중앙축으로부터 떨어진 각도를 구함
-        angle_x = np.degrees(np.arctan2(abs(x_d), -z_d))  # 드론 바디 기준
-        angle_y = np.degrees(np.arctan2(abs(y_d), -z_d))
-
-        # x, y 방향 모두 fov/2 이내면 카메라 프레임 안에 있는 것
-        if (angle_x <= half_fov) and (angle_y <= half_fov):
-            return True
-        else:
-            return False
-
-    # About to deprecated
-    def _check_los_segmentation(self):
-        """
-        세그멘테이션을 활용하여 착륙 패드(landing_pad_id)의 link가
-        카메라 프레임 안에 하나라도 찍혀 있으면 LOS=True 반환
-        """
-        # NOT TESTED YET
-        # 세그멘테이션 사용해서 이미지 받아오기
-        # segmentation=True 로 호출해야 ER_SEGMENTATION_MASK_OBJECT_AND_LINKINDEX 모드로 동작합니다.
-        _, _, seg = self._getDroneImages(nth_drone=0, segmentation=True)
-
-        # seg 배열의 각 픽셀에는 objectUniqueId와 linkIndex가 비트로 encoding되어 있음
-        # 공식 문서에 따르면, segPixelValue = objectUniqueId << 24 + linkIndex << 16 + ...
-        # 여기서 objectUniqueId를 얻으려면 (segPixelValue & ((1 << 24) - 1)) >> 16 이런 식으로 bit마스크를 해주어야 합니다.
-
-        # 하지만 착륙 패드의 link들도 구별하려면, linkIndex까지 확인해야 합니다.
-        # pad_id = self.landing_pad_id
-        pad_uid = self.landing_pad_id  # 착륙 패드의 유니크 ID
-
-        height, width = seg.shape[:2]
-        for y in range(height):
-            for x in range(width):
-                pix = seg[y, x]
-                # 오브젝트 ID
-                object_uid = (pix & ((1 << 24) - 1)) >> 16
-                if object_uid == pad_uid:
-                    # 착륙 패드의 어느 link든 한 픽셀이라도 카메라에 찍혔다면 LOS = True
-                    return True
-
-        return False
-
-
-class VisionLandingAviaryLCfirst(VisionLandingAviary):
-    def __init__(self,
-                 drone_model: DroneModel = DroneModel.CF2X,
-                 initial_xyzs=None,
-                 initial_rpys=None,
-                 physics: Physics = Physics.PYB,
-                 freq: int = 300,
-                 aggregate_phy_steps: int = 10,
-                 gui: bool = False,
-                 record: bool = False,
-                 obs: ObservationType = ObservationType.BW,
-                 act: ActionType = ActionType.VEL,
-                 channel_first: bool = True,
-                 stack_size: int = 4,
-                 fov: float = 80.0,
-                 img_res: np.ndarray = np.array([84, 84]),
-                 img_fps: int = 30,
-                 episode_len_sec: float = 30.0,
-                 include_drone_state: bool = True,
-                 difficulty: int = 4,
-                 curriculum_configs: dict = None,
-                 ):
-        super().__init__(drone_model=drone_model,
-                         initial_xyzs=initial_xyzs,
-                         initial_rpys=initial_rpys,
-                         physics=physics,
-                         freq=freq,
-                         aggregate_phy_steps=aggregate_phy_steps,
-                         gui=gui,
-                         record=record,
-                         obs=obs,
-                         act=act,
-                         channel_first=channel_first,
-                         stack_size=stack_size,
-                         fov=fov,
-                         img_res=img_res,
-                         img_fps=img_fps,
-                         episode_len_sec=episode_len_sec,
-                         include_drone_state=include_drone_state,
-                         difficulty=difficulty,
-                         curriculum_configs=curriculum_configs)
-
-    def _vanilla_reward_function(self):
-        # 2. Check Landing/Crashing
-        reward_landing_or_crashing = self._compute_reward_landing_or_crashing()
-        if reward_landing_or_crashing < 0:
-            return reward_landing_or_crashing
-
+    def _vanilla_reward_function_from_paper_viz_first(self):
         # 1. Check visibility
         reward_visibility = self._compute_reward_visibility()
         if reward_visibility < 0:
             return reward_visibility
+
+        # 2. Check Landing/Crashing
+        reward_landing_or_crashing = self._compute_reward_landing_or_crashing()
+        if reward_landing_or_crashing < 0:
+            return reward_landing_or_crashing
 
         # 3. Compute vertical velocity reward (safety)
         reward_vertical_velocity = self._compute_vertical_velocity_reward()
