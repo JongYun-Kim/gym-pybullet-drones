@@ -21,7 +21,7 @@ class VisionLanderPPOConfig:
     # Evaluation mode
     eval_mode: bool = False
     # Network structure configs
-    is_shared_net: bool = False
+    is_conv_shared: bool = False
     # Encoder configs
     encoder_channels: List[int] = field(default_factory=lambda: [32, 32, 32, 32])
     kernel_sizes: List[int] = field(default_factory=lambda: [3, 3, 3, 3])
@@ -36,7 +36,7 @@ class VisionLanderPPOConfig:
 
     def __post_init__(self):
         assert isinstance(self.ru_debugging, bool), f"ru_debugging({type(self.ru_debugging)}) 타입이 bool이어야 합니다!"
-        assert isinstance(self.is_shared_net, bool), f"is_shared_net({type(self.is_shared_net)}) 타입이 bool이어야 합니다!"
+        assert isinstance(self.is_conv_shared, bool), f"is_shared_net({type(self.is_conv_shared)}) 타입이 bool이어야 합니다!"
         assert isinstance(self.use_anomaly_detection, bool), f"use_anomaly_detection({type(self.use_anomaly_detection)}) 타입이 bool이어야 합니다!"
         assert isinstance(self.eval_mode, bool), f"eval_mode({type(self.eval_mode)}) 타입이 bool이어야 합니다!"
         # (1) encoder 관련 validation
@@ -104,8 +104,8 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         - Critic: encoder -> embedding -> dense; shares enc/embd w/ actor if is_shared_net=True
     """
     def __init__(self, obs_space, action_space, num_outputs, model_config, name, **kwargs):
-        nn.Module.__init__(self)  # Initialize nn.Module first
         TorchModelV2.__init__(self, obs_space, action_space, num_outputs, model_config, name)
+        nn.Module.__init__(self)
 
         # [1] Get model config
         self.cfg: VisionLanderPPOConfig = self._get_and_validate_model_config(model_config)
@@ -145,8 +145,8 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         )
 
         # [4-3] Critic encoder/embedding
-        if self.cfg.is_shared_net: # Shared network: reuse actor enc/embd; but set None-s for debugging purposes
-            self.critic_encoder, self.critic_embedding = None, None
+        if self.cfg.is_conv_shared: # Shared network: reuse actor enc/embd; but set None-s for debugging purposes
+            self.critic_encoder = None
         else:                      # Separate network: build encoder/embedding for critic
             self.critic_encoder = build_encoder(
                 input_channel_size,
@@ -154,13 +154,15 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
                 self.cfg.kernel_sizes,
                 self.cfg.strides
             )
-            self.critic_embedding = build_embedding(
-                combined_size,
-                self.cfg.embed_dim,
-                self.cfg.use_layer_norm
-            )
 
-        # [4-4] Critic dense
+        # [4-4] Critic embedding
+        self.critic_embedding = build_embedding(
+            combined_size,
+            self.cfg.embed_dim,
+            self.cfg.use_layer_norm
+        )
+
+        # [4-5] Critic dense
         self.critic_dense = build_mlp(
             input_dim=self.cfg.embed_dim,
             hidden_sizes=self.cfg.value_hidden_sizes,
@@ -178,7 +180,7 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
             assert isinstance(cfg, VisionLanderPPOConfig), \
                 f"model_config['custom_model_config'] is not VisionLanderPPOConfig. It is {type(cfg)}."
         if cfg.ru_debugging:
-            if cfg.is_shared_net:
+            if cfg.is_conv_shared:
                 print("[VisionLanderPPO] - Creating a SHARED network for actor and critic")
             else:
                 print("[VisionLanderPPO] - Creating SEPARATE networks for actor and critic")
@@ -243,21 +245,24 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
         stacked_images = stacked_images / 255.0  # Not in-place operation
 
         # Actor: (images) ->[enc]-> enc_out+drone_state ->[embd]-> embd -> [dense]-> logits
-        actor_enc_out = self.actor_encoder(stacked_images)
+        if self.cfg.is_conv_shared:
+            actor_enc_out = self.actor_encoder(stacked_images).detach()  # only critic updates conv weights
+        else:
+            actor_enc_out = self.actor_encoder(stacked_images)
         actor_enc_flattened = actor_enc_out.reshape(batch_size, -1)
         actor_input = torch.cat([actor_enc_flattened, stacked_drone_states], dim=1)
         actor_embd = self.actor_embedding(actor_input)
         logits = self.actor_dense(actor_embd)  # (batch_size, num_outputs)
 
         # Critic: (images) ->[enc]-> enc_out+drone_state ->[embd]-> embd -> [dense]-> value
-        if self.cfg.is_shared_net:
-            critic_enc_out, critic_enc_flattened, critic_input = actor_enc_out, actor_enc_flattened, actor_input
-            critic_embd = actor_embd
+        if self.cfg.is_conv_shared:
+            critic_enc_out = self.actor_encoder(stacked_images)  # allow critic optimizer to update conv weights
         else:
             critic_enc_out = self.critic_encoder(stacked_images)  # (batch_size, 32, 35, 35)
-            critic_enc_flattened = critic_enc_out.reshape(batch_size, -1)  # (batch_size, conv_out_flattened_size)
-            critic_input = torch.cat([critic_enc_flattened, stacked_drone_states], dim=1) # (b, combined_size)
-            critic_embd = self.critic_embedding(critic_input)  # (batch_size, embed_dim)
+
+        critic_enc_flattened = critic_enc_out.reshape(batch_size, -1)  # (batch_size, conv_out_flattened_size)
+        critic_input = torch.cat([critic_enc_flattened, stacked_drone_states], dim=1) # (b, combined_size)
+        critic_embd = self.critic_embedding(critic_input)  # (batch_size, embed_dim)
 
         self._value_out = self.critic_dense(critic_embd)  # (batch_size, 1)
 
@@ -270,7 +275,7 @@ class VisionLanderPPO(TorchModelV2, nn.Module):
                 print(f"@@@@@@@@@@@@@ actor_enc_flattened (nan): {torch.isnan(actor_enc_flattened).sum()}")
                 print(f"@@@@@@@@@@@@@ actor_embd (nan): {torch.isnan(actor_embd).sum()}")
 
-                if not self.cfg.is_shared_net:
+                if not self.cfg.is_conv_shared:
                     print(f"@@@@@@@@@@@@@ critic_enc_out (nan): {torch.isnan(critic_enc_out).sum()}")
                     print(f"@@@@@@@@@@@@@ critic_enc_flattened (nan): {torch.isnan(critic_enc_flattened).sum()}")
                     print(f"@@@@@@@@@@@@@ critic_embd (nan): {torch.isnan(critic_embd).sum()}")
@@ -315,7 +320,7 @@ class VisionLanderPPOLegacy(TorchModelV2, nn.Module):
                 f"num_outputs is not 2 * action_size! It is {num_outputs} vs. {2*action_size}."
 
         # (1) Build networks
-        if self.cfg.is_shared_net:
+        if self.cfg.is_conv_shared:
             # 기존 처럼 한 벌의 encoder/embedding 만 사용
             self._build_shared_nets()
         else:
@@ -443,7 +448,7 @@ class VisionLanderPPOLegacy(TorchModelV2, nn.Module):
             # images /= 255.0
             images = images.div(255.0)  # avoid in-place operation (may cause error for gradient calculation in PyTorch)
 
-            if self.cfg.is_shared_net:
+            if self.cfg.is_conv_shared:
                 # === (공유 네트워크) 기존 로직 ===
                 enc_out = self.encoder(images)
                 enc_out_flat = enc_out.view(enc_out.shape[0], -1)
@@ -465,7 +470,7 @@ class VisionLanderPPOLegacy(TorchModelV2, nn.Module):
                 # critic forward에 필요한 obs를 저장해둔다(value_function()에서 사용)
                 self._current_obs = obs_dict
 
-            if self.cfg.ru_debugging and batch_size == 512 and not self.cfg.is_shared_net:
+            if self.cfg.ru_debugging and batch_size == 512 and not self.cfg.is_conv_shared:
                 if torch.isnan(logits).any():
                     print(f"@@@@@@@@@@@@@ images (nan): {torch.isnan(images).sum()}")
                     print(f"@@@@@@@@@@@@@ drone_state (nan): {torch.isnan(drone_state).sum()}")
@@ -483,7 +488,7 @@ class VisionLanderPPOLegacy(TorchModelV2, nn.Module):
 
     def value_function(self) -> TensorType:
         """RLlib이 정책 네트워크 forward 이후 호출하는 함수."""
-        if self.cfg.is_shared_net:
+        if self.cfg.is_conv_shared:
             # 공유 네트워크라면 forward()에서 self._value_out을 이미 계산해 둠
             assert self._value_out is not None, "value_function() called before forward()?"
             return self._value_out.squeeze(-1)
