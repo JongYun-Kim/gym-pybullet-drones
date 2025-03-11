@@ -88,14 +88,16 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # Reward params
         # # [landing, crash, visibility, hv_scale, hv_ratio]
-        assert reward_params is not None, "Reward params should be provided."
-        assert len(reward_params) == 6, "Reward params should be a list of 5 elements."
+        assert reward_params is not None, "Reward params must be provided."
+        assert len(reward_params) == 6, "Reward params must be a list of 5 elements."
         self.landing_reward = reward_params[0]
         self.crash_penalty = reward_params[1]
         self.visibility_penalty = reward_params[2]
         self.hv_scale = reward_params[3]
         self.hv_ratio = reward_params[4]
         self.time_penalty = reward_params[5]
+
+        self.is_landed, self.is_crashed, self.is_time_out = 0, 0, 0  # for statistics
 
         assert include_drone_state, "Currently, include_drone_state == False is not supported."
         self._include_actions_in_obs = include_actions_in_obs
@@ -137,19 +139,20 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # onboard 이미지 저장 경로 생성 (이미 BaseAviary에서 설정됨)
         # 예: self.ONBOARD_IMG_PATH = ...  (이미 BaseAviary.__init__() 내에서 할당)
 
-        # 이제 IMG_RES가 정의되었으므로 dummy_frame을 생성하고 frame_buffer 초기화
-        height = int(self.IMG_RES[1])
-        width = int(self.IMG_RES[0])
-        num_channels = 1 if self.use_gray_scale else 3
+        # Reset frame buffer
+        self.frame_buffer, self.state_buffer = None, None
+        self._reset_frame_buffer()
 
-        if self.channel_first:  # (C, H, W)
-            dummy_frame = np.zeros((num_channels, height, width), dtype=np.uint8)
-        else:                   # (H, W, C)
-            dummy_frame = np.zeros((height, width, num_channels), dtype=np.uint8)
+    def _reset_frame_buffer(self):
+        h, w = self.IMG_RES[1], self.IMG_RES[0]
+        c = 1 if self.use_gray_scale else 3
 
-        # 버퍼를 채워 넣음 (원하는 경우 dummy_frame.copy() 사용)
+        if self.channel_first:
+            dummy_frame = np.zeros((c, h, w), dtype=np.uint8)
+        else:
+            dummy_frame = np.zeros((h, w, c), dtype=np.uint8)
+
         self.frame_buffer = [dummy_frame.copy() for _ in range(self.stack_size)]
-        # 드론 상태 버퍼 초기화: list of np.ndarray (7, or 10,)
         drone_state_len = 10 if self._include_actions_in_obs else 7
         dummy_state = np.zeros(drone_state_len, dtype=np.float32)
         self.state_buffer = [dummy_state.copy() for _ in range(self.stack_size)]
@@ -167,13 +170,17 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # 패드 위치를 기준으로 반경 'r'm 이내의 랜덤 오프셋 생성 (균일하게 생성하려면 r <- sqrt(r) 사용; 선형 r은 가운데로 더 몰림)
         if initial_xyzs is None:
-            r = np.random.uniform(0, 1.0)
+            init_z_min = 0.5
+            init_z_max = 4.0
+            drone_z = np.random.uniform(init_z_min, init_z_max)
+
+            r_max = drone_z * 0.1
+            r = np.random.uniform(0, r_max)
             theta = np.random.uniform(0, 2*np.pi)
             offset_x = r * np.cos(theta)
             offset_y = r * np.sin(theta)
             drone_x = pad_xy[0] + offset_x
             drone_y = pad_xy[1] + offset_y
-            drone_z = 4.0  # 고도 10.0 근처
         else:
             drone_x, drone_y, drone_z = initial_xyzs[0]
 
@@ -277,6 +284,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           - 카메라 이미지(초기 프레임)를 받아서 프레임 버퍼를 stack_size만큼 채움
           - stacked observation 반환
         """
+        self.is_landed, self.is_crashed, self.is_time_out = 0, 0, 0  # for statistics
+
         self.last_action_vel = np.zeros(3)  # 마지막으로 적용된 속도 명령
 
         # 드론 초기 위치/자세를 랜덤으로 재설정
@@ -287,6 +296,9 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # 착륙 패드 리셋 및 초기 업데이트
         self._resetLandingPad()
         self._updateLandingPad()
+
+        # Frame buffer 초기화
+        self._reset_frame_buffer()
 
         # 상위 환경(super)의 reset() 호출 (여기서 p.resetSimulation() 등이 실행됨)
         obs = super().reset()
@@ -598,23 +610,23 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         drone_id = self.DRONE_IDS[0]
         drone_altitude = self.pos[0, 2]
 
-        if drone_altitude >= self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
+        contacts = p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT)
+        assert isinstance(contacts, tuple), "p.getContactPoints() should return a tuple. Check the version of PyBullet."
+
+        if contacts == ():
+            return 0.0  # Hasn't landed or crashed yet
+
+        if drone_altitude < self.pad_height:
+            self.is_crashed = 1
+            print(' @ [VisionLandingAviary] env: Crashed!')
+            return 0.0 if no_crash_penalty else self.crash_penalty
+        else:
+            self.is_landed = 1
             print(' @ [VisionLandingAviary] env: Landed!')
             return self.landing_reward
-        elif drone_altitude < self.pad_height and p.getContactPoints(bodyA=drone_id, physicsClientId=self.CLIENT) != ():
-            print(' @ [VisionLandingAviary] env: Crashed!')
-            if no_crash_penalty:
-                return 0.0
-            else:
-                return self.crash_penalty  # -1.0
-        else:  # Hasn't landed or crashed yet
-            return 0.0
 
     def _compute_reward_visibility(self):
         """Returns non-negative reward if LOS; otherwise, negative reward."""
-        pad_position = self._get_pad_center_position()  # numpy (3,)
-        # if self._check_los(pad_position):
-        # if self._check_los_segmentation():
         if self._check_los_camera_polygon_vs_pad_box():
             return 0.0
         else:
@@ -728,13 +740,18 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         # Note: self.step_counter hasn't been updated in step() yet;
         #       So, it is smaller than actual step count by self.AGGR_PHY_STEPS at this line.
         if (self.step_counter + self.AGGR_PHY_STEPS) >= self.EPISODE_LEN_SEC * self.SIM_FREQ:
+            self.is_time_out = 1 if (self.is_landed + self.is_crashed) < 1 else 0
             print(' @ [VisionLandingAviary] env: Episode time out!')
-            return True
+            return True  # should be controlled by 'no_done_at_end' with 'horizon' configs
 
         return False
 
     def _computeInfo(self):
-        info = {}
+        info = {
+            "is_landed": self.is_landed,
+            "is_crashed": self.is_crashed,
+            "is_timeout": self.is_time_out,
+        }
         return info
 
     def step(self, action):
@@ -745,7 +762,11 @@ class VisionLandingAviary(BaseSingleAgentAviary):
           3. observation, reward, done, info를 반환함.
         """
         self._updateLandingPad()
+        action = self.override_action(action)
         return super().step(action)
+
+    def override_action(self, action):
+        return action
 
     def _computeReward_backup_thanks_to_Pawel(self):
         # This is just a backup; not used in the current implementation; ignore this method
@@ -885,3 +906,19 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         reward += reward_visibility + reward_landing_or_crashing
         return reward
 
+
+class VisionLandingAviary_2D(VisionLandingAviary):
+    """
+    2D case: just for debugging...
+    """
+    def override_action(self, action):
+        # Check if it's a 3-d ndarray
+        assert action.shape == (3,), f"Action shape should be (3,), but got {action.shape}"
+        assert isinstance(action, np.ndarray), f"Action type should be np.ndarray, but got {type(action)}"
+        # print(f"action is {type(action)} type and shape is {action.shape}")
+        # Clip the action to be within the range of [-1, 1]
+        # action = np.clip(action, -1, 1)
+        # Override the z direction to be -0.49
+        action = np.array(action, copy=True)  # RLlib's action is read-only
+        action[2] = -0.49
+        return action
