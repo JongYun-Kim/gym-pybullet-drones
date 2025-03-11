@@ -3,8 +3,9 @@ from ray import tune
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
+from ray.rllib.algorithms.ppo.ppo import PPO
 
-from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary
+from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary, VisionLandingAviary_2D
 from gym_pybullet_drones.models.vision_landing_model import VisionLanderPPO, VisionLanderPPOConfig
 
 from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
@@ -15,8 +16,28 @@ from utils.utils_my_rllib import create_multi_callbacks_from_classes
 import copy
 
 # TODOs
-# - [ ] Add evaluation during training
+# - [x] Add evaluation during training
 # - [ ] Track log_std of the policy output
+
+class LogSuccessRateCallback(DefaultCallbacks):
+    def on_episode_end(self, worker, base_env, policies, episode, **kwargs):
+        last_info = episode.last_info_for()
+        if last_info is not None:
+            is_landed = last_info['is_landed']
+            is_crashed = last_info['is_crashed']
+            is_timeout = last_info['is_timeout']
+
+            assert is_landed + is_crashed + is_timeout == 1, \
+                f"One of is_landed, is_crashed, is_timeout must be True. " \
+                f"Got: is_landed={is_landed}, is_crashed={is_crashed}, is_timeout={is_timeout}"
+
+            success_rate = float(is_landed)
+            crash_rate = float(is_crashed)
+            timeout_rate = float(is_timeout)
+
+            episode.custom_metrics["success_rate"] = success_rate
+            episode.custom_metrics["crash_rate"] = crash_rate
+            episode.custom_metrics["timeout_rate"] = timeout_rate
 
 
 class LogGradAndWeightStatsCallbacks(DefaultCallbacks):
@@ -116,22 +137,55 @@ class CurriculumCallbacks(DefaultCallbacks):
 
 def get_env_configs(default_env_config):
     reward_params_variants = [
-        # [landing, crash, viz,   scale, ratio, time]
-        [180.0,    -1.0,   -0.01, 1.6,   0.375,  0.0],
-        [180.0,    -1.0,   -0.01, 1.6,   0.375, -0.4],
-        [10.0,     -1.0,   -0.05,  0.05,  0.5,    0.0],
-        [10.0,     -10.0,  -0.05,  0.05,  0.5,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.05,  0.4,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.05,  0.5,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.05,  0.6,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.1,   0.4,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.1,   0.5,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.1,   0.6,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.01,  0.4,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.01,  0.5,   -0.01],
-        [10.0,     -1.0,   -0.05,  0.01,  0.6,   -0.01],
+        # [landing, crash,  viz,   scale, ratio,  time]
+        [140.0,     -1.0,  -0.01,  0.6,   1.0,    0.0],
+        # [  140.0,  -1.0,  -0.01,  1.6,   0.5,  -0.0],
+        # [  180.0,  -1.0,  -0.01,  1.6,   0.5,  -0.1],
+        # [  140.0,  -1.0,  -0.01,  0.5,   0.5,  -0.1],
+        # [  140.0,  -40.0,  -0.1,  1.6,   0.5,  -0.05],
+        # [  140.0,  -40.0,  -0.5,  1.6,   0.5,  -0.05],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [  000.0,   0.0,   0.0,   0.0,   0.00,   0.0],
+        # [landing, crash, viz,   scale,  ratio,  time]
+        # [  10.0,    0.0,   0.0,   0.0,   0.5,   0.0],
+        # [  10.0,    0.0,   0.0,   0.0,   0.5,  -0.01],
+        # [  10.0,   -1.0,   0.0,   0.0,   0.5,   0.0],  # 3
+        # [  10.0,   -1.0,   0.0,   0.0,   0.5,  -0.01],
+        # [  10.0,    0.0,  -0.01,  0.0,   0.5,   0.0],
+        # [  10.0,    0.0,  -0.01,  0.0,   0.5,  -0.01],
+        # [  10.0,   -1.0,  -0.01,  0.0,   0.5,   0.0],
+        # [  10.0,   -1.0,  -0.01,  0.0,   0.5,  -0.01],
+        # [  10.0,    0.0,   0.0,   0.01,  0.5,   0.0],  # 9  ;   10 + (450*0.01) = 14.5
+        # [  10.0,    0.0,   0.0,   0.01,  0.5,  -0.01],  # 10
+        # [  10.0,   -1.0,   0.0,   0.01,  0.5,   0.0],
+        # [  10.0,   -1.0,   0.0,   0.01,  0.5,  -0.01],
+        # [  10.0,    0.0,  -0.01,  0.01,  0.5,   0.0],
+        # [  10.0,    0.0,  -0.01,  0.01,  0.5,  -0.01],
+        # [  10.0,   -1.0,  -0.01,  0.01,  0.5,   0.0],
+        # [  10.0,   -1.0,  -0.01,  0.01,  0.5,  -0.01],
+        # [landing, crash, viz,   scale, ratio,  time]
+        # [180.0,    -1.0,   -0.01, 1.6,   0.375,  0.0],
+        # [180.0,    -1.0,   -0.01, 1.6,   0.375, -0.4],
+        # [10.0,     -1.0,   -0.05,  0.05,  0.5,    0.0],
+        # [10.0,     -10.0,  -0.05,  0.05,  0.5,   -0.01],
+        # [10.0,     -1.0,   -0.05,  0.05,  0.4,   -0.01],
+        # [10.0,     -1.0,   -0.05,  0.05,  0.5,   -0.01],
+        # [10.0,     -1.0,   -0.05,  0.05,  0.6,   -0.01],
+        # [10.0,     -1.0,   -0.05,  0.1,   0.4,   -0.01],
+        # [10.0,     -1.0,   -0.05,  0.1,   0.5,   -0.01], # 9
+        # [10.0,     -1.0,   -0.05,  0.1,   0.6,   -0.01], # 10
+        # [10.0,     -1.0,   -0.05,  0.01,  0.4,   -0.01],
+        # [10.0,     -1.0,   -0.05,  0.01,  0.5,   -0.01],
+        # [10.0,     -1.0,   -0.05,  0.01,  0.6,   -0.01],
     ]
-    configs = [default_env_config]
+    # configs = [default_env_config]
+    configs = []
     for params in reward_params_variants:
         new_config = copy.deepcopy(default_env_config)
         new_config["reward_params"] = params
@@ -139,10 +193,10 @@ def get_env_configs(default_env_config):
         #
         assert len(params) == 6
         assert params[0] > 0
-        assert params[1] < 0
-        assert params[2] < 0
-        assert params[3] > 0
-        assert 0 < params[4] < 1
+        assert params[1] <= 0
+        assert params[2] <= 0
+        assert params[3] >= 0
+        assert 0 <= params[4] <= 1
         assert params[5] <= 0
     return configs
 
@@ -156,12 +210,15 @@ if __name__ == "__main__":
     # # [0-2] curriculum learning
     # enable_curriculum_learning = True
     enable_curriculum_learning = False
-    for _ in range(5):
+    for _ in range(4):
         print(f"\n!!! Curriculum learning is {'ENABLED' if enable_curriculum_learning else 'DISABLED'}")
         print(f"!!!   Make sure if you want to enable 'CURRICULUM LEARNING' or not.")
     # # [0-3] log grad and weight stats
     # enable_log_grad_and_weight_stats = True
     enable_log_grad_and_weight_stats = False
+    # # [0-4] log success rate
+    enable_log_success_rate = True
+    # enable_log_success_rate = False
 
     # [1] Ray init
     ray.init(local_mode=enable_ray_local_mode_for_debugging)
@@ -192,6 +249,8 @@ if __name__ == "__main__":
         callback_classes.append(CurriculumCallbacks)
     if enable_log_grad_and_weight_stats:
         callback_classes.append(LogGradAndWeightStatsCallbacks)
+    if enable_log_success_rate:
+        callback_classes.append(LogSuccessRateCallback)
     multi_callbacks, callback_names = create_multi_callbacks_from_classes(callback_classes)
 
     # [3] Env
@@ -212,7 +271,7 @@ if __name__ == "__main__":
         "fov": 80.0,  # field of view of the drone's camera in degrees
         "img_res": np.array([84, 84]),  # num pixels of the square image
         "img_fps": 30,
-        "episode_len_sec": 15.0,  # episode length in "seconds" (float!)
+        "episode_len_sec": 12.0,  # episode length in "seconds" (float!)
         "include_drone_state": True,
         "include_actions_in_obs": True,
         "difficulty": 1 if enable_curriculum_learning else 4,
@@ -222,6 +281,8 @@ if __name__ == "__main__":
     env_configs_reward_test = get_env_configs(env_config)
     env_name = "vision_landing_aviary_env"
     register_env(env_name, lambda cfg: VisionLandingAviary(**cfg))
+    env_name_2d = "vision_landing_aviary_env_2d"
+    register_env(env_name_2d, lambda cfg: VisionLandingAviary_2D(**cfg))
 
     # [4] Model
     # Set up custom model configuration
@@ -229,11 +290,21 @@ if __name__ == "__main__":
     my_config_instance.ru_debugging = True
     my_config_instance.use_layer_norm = True
     my_config_instance.use_anomaly_detection = False
-    my_config_instance.is_shared_net = False
+    my_config_instance.is_conv_shared = False
     custom_model_config = {
         "config_instance": my_config_instance,
         "config_in_dict": my_config_instance.to_dict(),
     }
+    my_config_instance2 = VisionLanderPPOConfig()
+    my_config_instance2.ru_debugging = True
+    my_config_instance2.use_layer_norm = True
+    my_config_instance2.use_anomaly_detection = False
+    my_config_instance2.is_conv_shared = True
+    custom_model_config2 = {
+        "config_instance": my_config_instance2,
+        "config_in_dict": my_config_instance2.to_dict(),
+    }
+
     # Register your custom model
     model_name = "vision_lander_ppo"
     ModelCatalog.register_custom_model(model_name, VisionLanderPPO)
@@ -241,39 +312,51 @@ if __name__ == "__main__":
     # [5] Train
     tune.run(
         "PPO",
-        # name="can_it_stop_test",
-        name="rwd_set_test", #0301: reward balanced 0.18h 0.15v,
+        # name="delete_me",  # just to see if any bugs in env and models
+        name="2d_test0311", #0301: reward balanced 0.18h 0.15v,
         local_dir="~/temps/debugging_only",
         # resume=True,
         # stop={"episode_reward_mean": -101},
-        stop={"training_iteration": 128},
+        stop={"training_iteration": 100},
         checkpoint_freq=5,
         keep_checkpoints_num=16,
         checkpoint_at_end=True,
         checkpoint_score_attr="episode_reward_mean",
         config={
-            "env": env_name,
-            # "env_config": env_config,
-            "env_config": tune.grid_search(env_configs_reward_test),
+            # "env": env_name,
+            "env": env_name_2d,
+            "env_config": env_config,
+            # "env_config": tune.grid_search(env_configs_reward_test),
             "framework": "torch",
             #
             "callbacks": multi_callbacks,
             #
             "model": {
                 "custom_model": model_name,
-                "custom_model_config": custom_model_config,
-                # "custom_action_dist": "squashed_gaussian",
+                # "custom_model_config": custom_model_config,
+                "custom_model_config": tune.grid_search([custom_model_config, custom_model_config2]),
             },
             "num_gpus": 1,
-            "num_workers": 22,
-            "num_envs_per_worker": 1,
+            "num_workers": 11,
+            "num_envs_per_worker": 2,
             "rollout_fragment_length": 450,
             "train_batch_size": 22*450,
             "sgd_minibatch_size": 512,
             "num_sgd_iter": 19,
             # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
-            "lr": 1e-4,
+            #
+            "evaluation_interval": 5,
+            "evaluation_duration_unit": "episodes",
+            "evaluation_duration": 50,
+            "evaluation_num_workers": 11,
+            "evaluation_config": {
+                "explore": True,
+                "horizon": None,
+                "no_done_at_end": False,
+            },
+            #
+            "lr": 9e-5,
             # "lr_schedule": [[0,     5e-5],
             #                 [2e5,   3e-5],
             #                 [2.5e5, 2.8e-5],
@@ -283,8 +366,12 @@ if __name__ == "__main__":
             #                 [4.5e5, 1.7e-5],
             #                 [1e6,   8e-6],
             #                 ],
+            # Horizon settgins
+            # "horizon": 360,  # YOU MUST CHECK IF THIS IS COMPATIBLE WITH YOUR ENV
+            # "soft_horizon": False, # If True, the env will not reset, which we don't want; So, MUST be set to FALSE
+            # "no_done_at_end": tune.grid_search([True, False]),
             # Must be fine-tuned when sharing vf-policy layers
-            "vf_loss_coeff": 0.5,
+            "vf_loss_coeff": 0.1,
             "use_critic": True,
             "use_gae": True,
             "gamma": 0.99,
@@ -301,9 +388,9 @@ if __name__ == "__main__":
             #                            [2e6, 0],
             #                            ],
             "clip_param": 0.21,  # 0.3
-            "vf_clip_param": 256,
+            "vf_clip_param": 300,
             # "grad_clip": None,
-            "grad_clip": 8.0,
+            "grad_clip": tune.grid_search([0.6, 10.0]),
             "kl_target": 0.01,
         },
     )
