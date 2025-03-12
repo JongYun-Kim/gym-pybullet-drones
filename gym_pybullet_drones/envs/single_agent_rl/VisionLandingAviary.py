@@ -617,12 +617,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
             return 0.0  # Hasn't landed or crashed yet
 
         if drone_altitude < self.pad_height:
-            self.is_crashed = 1
-            print(' @ [VisionLandingAviary] env: Crashed!')
             return 0.0 if no_crash_penalty else self.crash_penalty
         else:
-            self.is_landed = 1
-            print(' @ [VisionLandingAviary] env: Landed!')
             return self.landing_reward
 
     def _compute_reward_visibility(self):
@@ -735,13 +731,20 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         """
         # 드론이 다른것과 충돌하면 done; Note: 땅과 충돌해도 끝남;;
         if p.getContactPoints(bodyA=1, physicsClientId=self.CLIENT) != ():
+            drone_altitude = self.pos[0, 2]
+            if drone_altitude < self.pad_height:
+                self.is_crashed = 1
+                # print(' @ [VisionLandingAviary] env: Crashed!')
+            else:
+                self.is_landed = 1
+                # print(' @ [VisionLandingAviary] env: Landed!')
             return True
         # 에피소드 시간 초과
         # Note: self.step_counter hasn't been updated in step() yet;
         #       So, it is smaller than actual step count by self.AGGR_PHY_STEPS at this line.
         if (self.step_counter + self.AGGR_PHY_STEPS) >= self.EPISODE_LEN_SEC * self.SIM_FREQ:
             self.is_time_out = 1 if (self.is_landed + self.is_crashed) < 1 else 0
-            print(' @ [VisionLandingAviary] env: Episode time out!')
+            # print(' @ [VisionLandingAviary] env: Episode time out!')
             return True  # should be controlled by 'no_done_at_end' with 'horizon' configs
 
         return False
