@@ -1,5 +1,6 @@
 import ray
 from ray import tune
+from ray.tune.progress_reporter import CLIReporter
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
@@ -208,8 +209,8 @@ if __name__ == "__main__":
     # enable_ray_local_mode_for_debugging = True
     enable_ray_local_mode_for_debugging = False
     # # [0-2] curriculum learning
-    # enable_curriculum_learning = True
-    enable_curriculum_learning = False
+    enable_curriculum_learning = True
+    # enable_curriculum_learning = False
     for _ in range(4):
         print(f"\n!!! Curriculum learning is {'ENABLED' if enable_curriculum_learning else 'DISABLED'}")
         print(f"!!!   Make sure if you want to enable 'CURRICULUM LEARNING' or not.")
@@ -227,13 +228,15 @@ if __name__ == "__main__":
     if enable_curriculum_learning:
         curriculum_configs = {}
         # Choose a metric to track the curriculum
-        curriculum_configs["metric"] = "timesteps_total"
+        #curriculum_configs["metric"] = "timesteps_total"
         # Plan the curriculum
-        plan_list = [
-            800_000,
-            1_500_000,
-            2_500_000,
-        ]
+        #plan_list = [
+        #    800_000,
+        #    1_500_000,
+        #    2_500_000,
+        #]
+        curriculum_configs["metric"] = "training_iteration"
+        plan_list = [10, 25, 40]
         num_difficulties = 4. # you can also automatically set this by len(plan_list) + 1
         assert len(plan_list) == num_difficulties - 1
         curriculum_configs["plans"] = plan_list
@@ -309,11 +312,23 @@ if __name__ == "__main__":
     model_name = "vision_lander_ppo"
     ModelCatalog.register_custom_model(model_name, VisionLanderPPO)
 
+    custom_reporter = CLIReporter(
+        metric_columns={
+            "training_iteration": "iter",
+            "timesteps_total": "ts",
+            "custom_metrics/success_rate_mean": "s_rate",
+            "episode_reward_mean": "rwd_avg",
+            "episode_reward_min": "rwd_min",
+            "episode_reward_max": "rwd_max",
+        }
+    )
+
     # [5] Train
     tune.run(
         "PPO",
         # name="delete_me",  # just to see if any bugs in env and models
-        name="2d_test0311", #0301: reward balanced 0.18h 0.15v,
+        name="2d_curr0311", #0301: reward balanced 0.18h 0.15v,
+        progress_reporter=custom_reporter,
         local_dir="~/temps/debugging_only",
         # resume=True,
         # stop={"episode_reward_mean": -101},
@@ -325,7 +340,8 @@ if __name__ == "__main__":
         config={
             # "env": env_name,
             "env": env_name_2d,
-            "env_config": env_config,
+            # "env_config": env_config,
+            "env_config": env_configs_reward_test[0],
             # "env_config": tune.grid_search(env_configs_reward_test),
             "framework": "torch",
             #
