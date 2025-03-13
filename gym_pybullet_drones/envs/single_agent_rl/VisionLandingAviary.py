@@ -250,7 +250,7 @@ class VisionLandingAviary(BaseSingleAgentAviary):
         Updates pad position every step.:
           - 패드가 초기화된 yaw 방향(heading)으로 일정 속도(self.landing_pad_speed)로 직진.
         """
-        dt = self.TIMESTEP  # 한 스텝의 시간 간격
+        dt = self.TIMESTEP * self.AGGR_PHY_STEPS  # time (RL)step in seconds
         dx = self.landing_pad_speed * dt * np.cos(self.landing_pad_yaw)
         dy = self.landing_pad_speed * dt * np.sin(self.landing_pad_yaw)
         self.landing_pad_base_pos[0] += dx
