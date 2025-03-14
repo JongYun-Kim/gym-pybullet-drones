@@ -1,5 +1,16 @@
 from ray.rllib.algorithms.callbacks import MultiCallbacks
+import torch.nn as nn
 
+def orthogonal_init(module: nn.Module):
+    """
+    Usage:
+        model.apply(orthogonal_init)
+    """
+    # 입력 validation: weight와 bias 속성이 있는지 확인하는 간단한 검사를 추가할 수 있습니다.
+    if hasattr(module, 'weight') and module.weight is not None:
+        nn.init.orthogonal_(module.weight)
+    if hasattr(module, 'bias') and module.bias is not None:
+        nn.init.constant_(module.bias, 0)
 
 def create_multi_callbacks_from_classes(callback_classes):
     """
