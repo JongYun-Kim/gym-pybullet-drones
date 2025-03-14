@@ -1,7 +1,7 @@
 from ray.rllib.models.torch.torch_modelv2 import TorchModelV2
 from ray.rllib.utils.typing import TensorType
 # typing
-from typing import List, Union, Dict, Optional, Tuple
+from typing import List, Union, Dict
 from dataclasses import dataclass, field, asdict
 # torch
 import torch
@@ -10,7 +10,7 @@ import numpy as np
 # for torch.autograd.detect_anomaly()
 import contextlib
 # from yours
-from gym_pybullet_drones.models.modules.module_builders import build_encoder, build_embedding, build_mlp
+from gym_pybullet_drones.rl.ppo.modules.module_builders import build_encoder, build_embedding, build_mlp
 
 
 @dataclass

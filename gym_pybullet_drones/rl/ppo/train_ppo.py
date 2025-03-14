@@ -4,10 +4,9 @@ from ray.tune.progress_reporter import CLIReporter
 from ray.rllib.models import ModelCatalog
 from ray.tune.registry import register_env
 from ray.rllib.algorithms.callbacks import DefaultCallbacks
-from ray.rllib.algorithms.ppo.ppo import PPO
 
 from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary, VisionLandingAviary_2D
-from gym_pybullet_drones.models.vision_landing_model import VisionLanderPPO, VisionLanderPPOConfig
+from gym_pybullet_drones.rl.ppo.vision_landing_model_ppo import VisionLanderPPO, VisionLanderPPOConfig
 
 from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
@@ -209,8 +208,8 @@ if __name__ == "__main__":
     # enable_ray_local_mode_for_debugging = True
     enable_ray_local_mode_for_debugging = False
     # # [0-2] curriculum learning
-    enable_curriculum_learning = True
-    # enable_curriculum_learning = False
+    # enable_curriculum_learning = True
+    enable_curriculum_learning = False
     for _ in range(4):
         print(f"\n!!! Curriculum learning is {'ENABLED' if enable_curriculum_learning else 'DISABLED'}")
         print(f"!!!   Make sure if you want to enable 'CURRICULUM LEARNING' or not.")
@@ -327,12 +326,12 @@ if __name__ == "__main__":
     tune.run(
         "PPO",
         # name="delete_me",  # just to see if any bugs in env and models
-        name="2d_curr0311", #0301: reward balanced 0.18h 0.15v,
+        name="2d_0313", #0301: reward balanced 0.18h 0.15v,
         progress_reporter=custom_reporter,
         local_dir="~/temps/debugging_only",
         # resume=True,
         # stop={"episode_reward_mean": -101},
-        stop={"training_iteration": 100},
+        stop={"training_iteration": 80},
         checkpoint_freq=5,
         keep_checkpoints_num=16,
         checkpoint_at_end=True,
@@ -340,8 +339,8 @@ if __name__ == "__main__":
         config={
             # "env": env_name,
             "env": env_name_2d,
-            # "env_config": env_config,
-            "env_config": env_configs_reward_test[0],
+            "env_config": env_config,
+            # "env_config": env_configs_reward_test[0],
             # "env_config": tune.grid_search(env_configs_reward_test),
             "framework": "torch",
             #
@@ -350,7 +349,8 @@ if __name__ == "__main__":
             "model": {
                 "custom_model": model_name,
                 # "custom_model_config": custom_model_config,
-                "custom_model_config": tune.grid_search([custom_model_config, custom_model_config2]),
+                "custom_model_config": custom_model_config2,
+                # "custom_model_config": tune.grid_search([custom_model_config, custom_model_config2]),
             },
             "num_gpus": 1,
             "num_workers": 11,
@@ -372,7 +372,7 @@ if __name__ == "__main__":
                 "no_done_at_end": False,
             },
             #
-            "lr": 9e-5,
+            "lr": 1e-4,
             # "lr_schedule": [[0,     5e-5],
             #                 [2e5,   3e-5],
             #                 [2.5e5, 2.8e-5],
@@ -387,7 +387,7 @@ if __name__ == "__main__":
             # "soft_horizon": False, # If True, the env will not reset, which we don't want; So, MUST be set to FALSE
             # "no_done_at_end": tune.grid_search([True, False]),
             # Must be fine-tuned when sharing vf-policy layers
-            "vf_loss_coeff": 0.1,
+            "vf_loss_coeff": tune.grid_search([0.01, 0.1, 0.25, 0.03, 0.07, 0.15]),
             "use_critic": True,
             "use_gae": True,
             "gamma": 0.99,
@@ -404,9 +404,9 @@ if __name__ == "__main__":
             #                            [2e6, 0],
             #                            ],
             "clip_param": 0.21,  # 0.3
-            "vf_clip_param": 300,
+            "vf_clip_param": 256,
             # "grad_clip": None,
-            "grad_clip": tune.grid_search([0.6, 10.0]),
+            "grad_clip": 1.0,
             "kl_target": 0.01,
         },
     )
