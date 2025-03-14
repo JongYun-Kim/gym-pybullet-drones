@@ -66,34 +66,33 @@ if __name__ == "__main__":
 
     register_env("SimpleSuccessEnv", env_creator)
 
-    tune.run(
+    results = tune.run(
         "PPO",
         local_dir="~/temps/examples_only",  # 결과 저장 디렉토리 (기본값: ~/ray_results)
+        metric="custom_metrics/success_rate_mean",  # 커스텀 메트릭
+        mode="max",  # 최대값을 찾는 것이므로 max
+        checkpoint_freq=1,
         stop={"training_iteration": 5},  # 5회 Iteration 후 종료
         config={
             "env": "SimpleSuccessEnv",     # 등록된 환경 이름
-            "num_workers": 2,             # 여러 워커 사용
-            "num_gpus": 1,
+            "num_workers": 8,             # 여러 워커 사용
+            "num_gpus": 0,
             "framework": "torch",
             "callbacks": LogSuccessRateCallbacks,  # 커스텀 콜백 사용
         },
     )
 
-    # config = (
-    #     PPOConfig()
-    #     # .environment(env=SimpleSuccessEnv, env_config={})
-    #     .environment(env="SimpleSuccessEnv", env_config={})
-    #     .rollouts(num_rollout_workers=2)  # 여러 워커를 사용
-    #     .framework("torch")               # 원하는 후레임워크 ㄱㄱ (torch;;)
-    #     .callbacks(MyCallbacks)
-    # )
-    #
-    # trainer = config.build()
-    #
-    # for i in range(5):
-    #     result = trainer.train()
-    #     print(
-    #         f"Iteration {i} | "
-    #         f"Reward: {result['episode_reward_mean']:.2f}, "
-    #         f"SuccessRate: {result['custom_metrics'].get('success_rate_mean', 0.0):.2f}"
-    #     )
+    df = results.results_df
+    print("Final Results:")
+    print("Best checkpoint path: ", results.best_checkpoint)
+    print("Best checkpoint score: ", results.best_result["episode_reward_mean"])
+    print("Best checkpoint success rate: ", results.best_result["custom_metrics"]["success_rate_mean"])
+    print(
+        df[
+            [
+                "training_iteration",
+                "episode_reward_mean",                 # Training reward mean
+                "custom_metrics/success_rate_mean",         # Training success rate
+            ]
+        ]
+    )
