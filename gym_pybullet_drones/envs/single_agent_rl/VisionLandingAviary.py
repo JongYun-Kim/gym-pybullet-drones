@@ -374,7 +374,8 @@ class VisionLandingAviary(BaseSingleAgentAviary):
 
         # 채널 방향으로 이어붙이기
         channel_axis = 0 if self.channel_first else -1
-        return np.concatenate(self.frame_buffer, axis=channel_axis)
+        stacked_images = np.concatenate(self.frame_buffer, axis=channel_axis)
+        return stacked_images
 
     def _get_stacked_state(self):
         """
@@ -925,3 +926,54 @@ class VisionLandingAviary_2D(VisionLandingAviary):
         action = np.array(action, copy=True)  # RLlib's action is read-only
         action[2] = -0.49
         return action
+
+
+class StateLandingAviary(VisionLandingAviary):
+    """
+    StateLandingAviary: 2D state space with 7 state variables
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._include_actions_in_obs = False
+
+    def _computeObs(self):
+        """
+        state: [relPos, relVel, quat, angVel]
+        """
+        drone_state = self._getDroneStateVector(0)
+
+        pad_pos = self._get_pad_center_position()
+        drone_pos = drone_state[0:3]
+        rel_pos = pad_pos - drone_pos
+
+        pad_speed = self.landing_pad_speed
+        pad_yaw = self.landing_pad_yaw
+        pad_vx = pad_speed * np.cos(pad_yaw)
+        pad_vy = pad_speed * np.sin(pad_yaw)
+        pad_vz = 0.0
+        pad_vel = np.array([pad_vx, pad_vy, pad_vz])
+        rel_vel = pad_vel - drone_state[10:13]
+
+        quat = drone_state[3:7]
+
+        ang_vel = drone_state[7:10]
+
+        normalized_rel_pos = rel_pos / 8.0
+        normalized_rel_vel = rel_vel / self.SPEED_LIMIT
+        normalized_quat = quat
+        normalized_ang_vel = ang_vel / 2.0
+
+        obs = np.concatenate(
+            [normalized_rel_pos, normalized_rel_vel, normalized_quat, normalized_ang_vel],
+            dtype=np.float64
+        )
+        # assert obs.shape == (13,), f"Invalid observation shape: {obs.shape}"
+        return obs
+
+    def _observationSpace(self):
+        """
+        state: [relPos, relVel, quat, angVel]
+        """
+        size = 3 + 3 + 4 + 3  # size = 13
+        return spaces.Box(low=-np.inf, high=np.inf, shape=(size,), dtype=np.float64)
+
