@@ -8,10 +8,6 @@ from ray.rllib.algorithms.callbacks import DefaultCallbacks
 from gym_pybullet_drones.envs.single_agent_rl.VisionLandingAviary import VisionLandingAviary_2D
 from gym_pybullet_drones.rl.sac.sac_model import VisionLanderSACPolicyModel, VisionLanderSACQModel
 
-from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
-from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
-
-
 
 class LogSuccessRateCallback(DefaultCallbacks):
     def on_episode_end(self, worker, base_env, policies, episode, **kwargs):
@@ -38,7 +34,7 @@ if __name__ == "__main__":
 
     # [1] Ray init
     # ray.init(local_mode=True)
-    ray.init(local_mode=False)
+    ray.init(local_mode=False, num_gpus=2)
 
     # [3] Env
     # Register your custom environment
@@ -75,12 +71,12 @@ if __name__ == "__main__":
         progress_reporter=custom_reporter,
         metric="custom_metrics/success_rate_mean",
         mode="max",
-        stop={"training_iteration": 128},
-        checkpoint_freq=5,
-        keep_checkpoints_num=16,
-        checkpoint_at_end=False,
+        stop={"training_iteration": 256},
+        #checkpoint_freq=10,
+        #keep_checkpoints_num=16,
+        #checkpoint_at_end=False,
         # checkpoint_score_attr="episode_reward_mean",
-        checkpoint_score_attr="custom_metrics/success_rate_mean",
+        #checkpoint_score_attr="custom_metrics/success_rate_mean",
         config={
             "env": env_name_2d,
             "env_config": env_config,
@@ -90,35 +86,34 @@ if __name__ == "__main__":
             "policy_model_config": {"custom_model": policy_model_name,},
             "q_model_config": {"custom_model": q_model_name,},
             "twin_q": True,
-            # "clip_actions": False,
             "num_gpus": 1,
-            "num_workers": 10,
+            "num_workers": 32,
             # "num_envs_per_worker": 2,
-            "rollout_fragment_length": 300,
-            "batch_mode": "complete_episodes",
+            "rollout_fragment_length": 256,
+            # "batch_mode": "complete_episodes",
             # "batch_mode": "truncate_episodes",
             "train_batch_size": 512,
-            # "training_intensity": None,
-            "num_steps_sampled_before_learning_starts": 3000,
+            "training_intensity": tune.grid_search([1, None]),
+            "num_steps_sampled_before_learning_starts": 4096,
             "replay_buffer_config": {"capacity": int(1e5),},
-            # "target_network_update_freq": 1,
-            "optimization": {
-                "actor_learning_rate": 3e-4,
-                "critic_learning_rate": 3e-4,
-                "entropy_learning_rate": 3e-4,
-            },
-            # "evaluation_interval": 5,
-            # "evaluation_duration_unit": "episodes",
-            # "evaluation_duration": 50,
-            # "evaluation_num_workers": 11,
-            # "evaluation_config": {"explore": True, "horizon": None, "no_done_at_end": False},
-            "tau": 0.005,
-            "initial_alpha": 1.0,
+            "target_network_update_freq": tune.grid_search([1,2,4]),
+            "tau": tune.grid_search([0.01, 0.005]),
+            "initial_alpha": tune.grid_search([0.1, 0.2, 0.5, 1.0]),
             "target_entropy": "auto",
-            # "n_step": 1,
-            # "lr": 1e-4,
-            "gamma": 0.99,
+            # "clip_actions": True,
+            "n_step": tune.grid_search([1,2,4]),
+            "gamma": tune.grid_search([0.99, 0.992]),
             # "grad_clip": tune.grid_search([0.5, 1.0, 5.0, 10.0, 40.0]),
+            "optimization": {
+                "actor_learning_rate": 5e-4,
+                "critic_learning_rate": 5e-4,
+                "entropy_learning_rate": 5e-4,
+            },
+            #"evaluation_interval": 30,
+            #"evaluation_duration_unit": "episodes",
+            #"evaluation_duration": 50,
+            #"evaluation_num_workers": 11,
+            #"evaluation_config": {"explore": True, "horizon": None, "no_done_at_end": False},
         },
     )
 
