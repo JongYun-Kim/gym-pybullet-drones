@@ -12,7 +12,7 @@ from gym_pybullet_drones.envs.BaseAviary import Physics, DroneModel
 from gym_pybullet_drones.envs.single_agent_rl.BaseSingleAgentAviary import ObservationType, ActionType
 import numpy as np
 
-from utils.utils_my_rllib import create_multi_callbacks_from_classes
+from gym_pybullet_drones.utils.utils_my_rllib import create_multi_callbacks_from_classes
 import copy
 
 # TODOs
@@ -205,8 +205,8 @@ if __name__ == "__main__":
 
     # [0] Run flags
     # # [0-1] ray init
-    # enable_ray_local_mode_for_debugging = True
-    enable_ray_local_mode_for_debugging = False
+    enable_ray_local_mode_for_debugging = True
+    # enable_ray_local_mode_for_debugging = False
     # # [0-2] curriculum learning
     # enable_curriculum_learning = True
     enable_curriculum_learning = False
@@ -217,8 +217,8 @@ if __name__ == "__main__":
     # enable_log_grad_and_weight_stats = True
     enable_log_grad_and_weight_stats = False
     # # [0-4] log success rate
-    enable_log_success_rate = True
-    # enable_log_success_rate = False
+    # enable_log_success_rate = True
+    enable_log_success_rate = False
 
     # [1] Ray init
     ray.init(local_mode=enable_ray_local_mode_for_debugging)
@@ -326,15 +326,15 @@ if __name__ == "__main__":
     tune.run(
         "PPO",
         # name="delete_me",  # just to see if any bugs in env and models
-        name="2d_0313", #0301: reward balanced 0.18h 0.15v,
+        name="image_test0401", #0301: reward balanced 0.18h 0.15v,
         progress_reporter=custom_reporter,
         local_dir="~/temps/debugging_only",
         # resume=True,
         # stop={"episode_reward_mean": -101},
         stop={"training_iteration": 80},
-        checkpoint_freq=5,
-        keep_checkpoints_num=16,
-        checkpoint_at_end=True,
+        checkpoint_freq=0,
+        # keep_checkpoints_num=0,
+        checkpoint_at_end=False,
         checkpoint_score_attr="episode_reward_mean",
         config={
             # "env": env_name,
