@@ -37,7 +37,9 @@ from gym_pybullet_drones.rl.drq.drq_torch_model import DrQTorchModel
 from ray.rllib.models import MODEL_DEFAULTS
 import copy
 
-
+# todos:
+# - [o] Apply augmentation to the policy model as well <-- done in the model (i.e. drq_torch_model.py)
+# - [ ] Use same augmented images for both Q and policy model
 def drq_actor_critic_loss(
         policy: Policy,
         model: DrQTorchModel,
@@ -296,7 +298,7 @@ def build_drq_model(
 
     num_outputs = action_space.shape[0]
     model = DrQTorchModel(
-        obs_space=obs_space,  # TODO: Check model obs space, ..., name, and config
+        obs_space=obs_space,
         action_space=action_space,
         num_outputs=num_outputs,
         model_config=config["model"],
@@ -315,7 +317,7 @@ def build_drq_model(
     # actual Q-networks and are used for target q-value calculations in the
     # loss terms.
     policy.target_model = DrQTorchModel(
-        obs_space=obs_space,  # TODO: Check model obs space, ..., name, and config
+        obs_space=obs_space,
         action_space=action_space,
         num_outputs=num_outputs,
         model_config=config["model"],
@@ -337,7 +339,6 @@ DrQTorchPolicy = build_policy_class(
     framework="torch",
     loss_fn=drq_actor_critic_loss,
     get_default_config=lambda: ray.rllib.algorithms.sac.sac.DEFAULT_CONFIG,
-    # get_default_config=lambda: gym_pybullet_drones.rl.drq.drq.DEFAULT_CONFIG,  # TODO: Consider this!
     stats_fn=stats,
     postprocess_fn=postprocess_trajectory,
     extra_grad_process_fn=apply_grad_clipping,

@@ -409,8 +409,10 @@ class DrQTorchModel(SACTorchModel):
             "DrQ only supports model_out as a dict with 'images' and 'drone_states' keys. " \
             "Please set `model_out` to a dict with 'images' and 'drone_states' keys in the model config."
 
+        aug_model_out = self.augment_obs(model_out)
+
         # Note: self.action_model expects 'input_dict' type as a subclass of ModelV2 in RLlib
-        return self.action_model({"obs": model_out}, state_in, seq_lens)
+        return self.action_model({"obs": aug_model_out}, state_in, seq_lens)
 
     def build_policy_model(self, obs_space, num_outputs, policy_model_config, name):
         if self.shared_conv_layers is None:
