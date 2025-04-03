@@ -99,7 +99,7 @@ class DrQQModel(TorchModelV2, nn.Module):
         )
 
         self.dense = nn.Sequential(
-            nn.Linear(50, 1024),
+            nn.Linear(53, 1024),
             nn.ReLU(),
             nn.Linear(1024, 1024),
             nn.ReLU(),
@@ -117,8 +117,8 @@ class DrQQModel(TorchModelV2, nn.Module):
         concat_conv_out = torch.cat((conv_out, stacked_drone_states), dim=1)
         embed_out = self.embed(concat_conv_out)
 
-        concat_conv_out = torch.cat((embed_out, actions), dim=1)
-        q_out = self.dense(concat_conv_out)  # (B, 1)
+        concat_embd_out = torch.cat((embed_out, actions), dim=1)
+        q_out = self.dense(concat_embd_out)  # (B, 1)
 
         return q_out, state
 
@@ -207,6 +207,9 @@ class DrQTorchModel(SACTorchModel):
         return input_dict["obs"], state
 
     def random_shift(self, imgs):
+        """
+        almost the org impl from DrQ-v2
+        """
         n, c, h, w = imgs.size()
         assert h == w
         padding = tuple([self.shift_pad] * 4)
@@ -261,8 +264,6 @@ class DrQTorchModel(SACTorchModel):
                 self.identity_grid.size(0) != batch_size or
                 self.identity_grid.size(1) != height or
                 self.identity_grid.size(2) != width):
-                # self.identity_grid.size(2) != height or
-                # self.identity_grid.size(3) != width):
             # Create normalized identity grid [-1, 1]
             self.identity_grid = torch.nn.functional.affine_grid(
                 torch.eye(2, 3, device=imgs.device).unsqueeze(0).repeat(batch_size, 1, 1),
