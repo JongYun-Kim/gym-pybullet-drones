@@ -83,7 +83,7 @@ class DrQQModel(TorchModelV2, nn.Module):
             raise ValueError("shared_conv_layers must be provided for DrQQModel.")
 
         stacked_image_space = obs_space["images"]
-        input_channels = stacked_image_space.shape[0]  # Assumes format (C, H, W); channel first
+        # input_channels = stacked_image_space.shape[0]  # Assumes format (C, H, W); channel first
         stacked_state_size = obs_space["drone_states"].shape[0]
 
         with torch.no_grad():
@@ -175,13 +175,9 @@ class DrQTorchModel(SACTorchModel):
             shift_pad=4,  # Padding for random shift
     ):
         self.shared_conv_layers = None
-
-        # obs_shape = obs_space.shape
-
         self.shift_pad = shift_pad
-        # Pre-compute fixed sampling grid parameters
-        self.identity_grid = None
-        self.padding_mode = 'border'  # Most similar to 'replicate' in the paper
+        # self.identity_grid = None
+        # self.padding_mode = 'border'  # Most similar to 'replicate' in the paper
 
         super().__init__(
             obs_space=obs_space,
@@ -415,8 +411,9 @@ class DrQTorchModel(SACTorchModel):
         return self.action_model({"obs": aug_model_out}, state_in, seq_lens)
 
     def build_policy_model(self, obs_space, num_outputs, policy_model_config, name):
+        num_stacked_images = obs_space["images"].shape[0]
         if self.shared_conv_layers is None:
-            self.shared_conv_layers = SharedConvLayers(4)  # Initialize shared conv layers, which is dirty tho
+            self.shared_conv_layers = SharedConvLayers(num_stacked_images)  # Initialize shared conv layers, which is dirty tho
         else:
             raise ValueError("shared_conv_layers must be provided for DrQPolicyModel.")
         model = DrQPolicyModel(
@@ -427,10 +424,6 @@ class DrQTorchModel(SACTorchModel):
             name=name,
             shared_conv_layers=self.shared_conv_layers,
         )
-        assert name=="policy_model"  # TODO: remove this once tested
-        # if policy_model_config is not None:
-        #     raise f"Currently, DrQ only implements {model.__class__.__name__} as the policy model. " \
-        #           f"Please set `policy_model_config` to None in the model config."
         return model
 
     def build_q_model(self, obs_space, action_space, num_outputs, q_model_config, name):
@@ -442,10 +435,6 @@ class DrQTorchModel(SACTorchModel):
             name=name,
             shared_conv_layers=self.shared_conv_layers,
         )
-        assert name in ["q", "twin_q"]  # TODO: remove this once tested
-        # if q_model_config is not None:
-        #     raise f"Currently, DrQ only implements {model.__class__.__name__} as the Q model. " \
-        #           f"Please set `q_model_config` to None in the model config."
         return model
 
     def policy_variables(self):

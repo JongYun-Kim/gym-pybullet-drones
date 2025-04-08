@@ -206,8 +206,6 @@ def drq_actor_critic_loss(
     if policy.config["twin_q"]:
         critic_loss.append(torch.mean(weights * huber_loss(twin_td_error)))
 
-    print(f"policy.config['twin_q']: {policy.config['twin_q']}")
-
     if policy.config["twin_q"]:
         assert twin_q_t is not None and twin_q_t_selected is not None and twin_td_error is not None, (
             f"Twin Q-values are not None, but they should be. Your policy.config.twin_q=={policy.config['twin_q']} "
