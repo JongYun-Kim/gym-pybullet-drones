@@ -49,8 +49,10 @@ RUN pip uninstall -y numpy && pip install numpy==1.23.4
 RUN pip install pybullet==3.2.5 && \
     pip install stable-baselines3==1.6.2 --no-deps
 
-# ✅ NEW: Install dm_control and Hydra packages (for drqv2)
+# Install dm_control and Hydra packages (for drqv2)
 RUN pip install dm_control hydra-core==1.1.0 hydra-submitit-launcher==1.1.5
+
+RUN pip install opencv-python-headless==4.11.0.86
 
 ########################################
 # Application setup
