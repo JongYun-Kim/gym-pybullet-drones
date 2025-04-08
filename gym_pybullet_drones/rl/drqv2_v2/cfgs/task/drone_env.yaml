@@ -1,0 +1,11 @@
+# Environment settings
+env_type: drone
+env_name: MyDroneEnv-v0  # placeholder yet
+env_class: gym_pybullet_drones.env.single_agent_rl.VisionLandingAviary.VisionLandingAviary
+landing_config:
+  reward_params: [140.0, -1.0, -0.01, 1.6, 0.375, 0.0]
+
+# Training parameters
+num_train_frames: 5000000
+stddev_schedule: 'linear(1.0, 0.1, 500000)'
+

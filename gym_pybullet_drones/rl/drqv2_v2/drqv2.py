@@ -10,6 +10,12 @@ import torch.nn.functional as F
 
 import utils
 
+# TODOs
+# - [ ] Include state in the obs; update encoder and its uses
+# - [o] Check the repr_dim in the encoder: it is hardcoded to 32 * 35 * 35 -> Yes, but it should be dynamic
+# - [ ] Make repr_dim dynamic in the encoder (pass a dummy tensor with no grad)
+# - [ ] Check if how they implemented the distributed rollout (num_workers: how does it work?)
+
 
 class RandomShiftsAug(nn.Module):
     def __init__(self, pad):
@@ -50,7 +56,7 @@ class Encoder(nn.Module):
         super().__init__()
 
         assert len(obs_shape) == 3
-        self.repr_dim = 32 * 35 * 35
+        self.repr_dim = 32 * 35 * 35  # Could be done dynamically by passing a dummy tensor with no grad
 
         self.has_state = state_dim > 0
 
