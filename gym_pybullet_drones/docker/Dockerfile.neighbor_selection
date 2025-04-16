@@ -1,0 +1,68 @@
+FROM rayproject/ray:2.1.0-py39-cu116
+
+# Switch to root for installation tasks
+USER root
+
+########################################
+# System and SSH configuration
+########################################
+
+# Remove potential Kubernetes repository and install system packages
+RUN rm -f /etc/apt/sources.list.d/kubernetes.list || true && \
+    apt-get update && \
+    apt-get install -y \
+        nano \
+        openssh-server \
+        ffmpeg \
+        git \
+        x11-apps \
+        iproute2 && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/*
+
+# Set up SSH: create necessary directory, change port, generate host keys, and adjust permissions
+RUN mkdir -p /var/run/sshd && \
+    sed -i 's/#Port 22/Port 2222/' /etc/ssh/sshd_config && \
+    ssh-keygen -A && \
+    chmod 644 /etc/ssh/ssh_host_*_key /etc/ssh/ssh_host_*
+
+
+########################################
+# Python package installations
+########################################
+
+# Install PyTorch and additional packages (including scipy and tensorboard) with CUDA 11.6 support,
+# as well as pygame and termcolor in one step.
+RUN pip install --extra-index-url https://download.pytorch.org/whl/cu116 \
+        torch==1.13.1+cu116 \
+        torchvision==0.14.1+cu116 \
+        torchaudio==0.13.1 \
+        scipy==1.9.3 \
+        tensorboard==2.19.0 \
+        pygame==2.1.2 \
+        termcolor==2.5.0
+
+# Ensure numpy is at the desired version
+RUN pip uninstall -y numpy && pip install numpy==1.23.4
+
+# Expose SSH port
+EXPOSE 2222
+
+########################################
+# Final user configuration and startup
+########################################
+# Set up 'ray' user with password 'lazy'
+RUN echo "ray:lazy" | chpasswd
+# Switch to 'ray' user and set working directory
+USER ray
+WORKDIR /home/ray
+
+# Create resources directory and copy application files
+RUN mkdir -p resources
+COPY --chown=ray:ray test_torch.py resources/
+COPY --chown=ray:ray ray_init_test.py resources/
+COPY --chown=ray:ray start_v5.sh resources/start.sh
+RUN chmod +x resources/start.sh
+
+# Set default command
+CMD ["/home/ray/resources/start.sh"]
